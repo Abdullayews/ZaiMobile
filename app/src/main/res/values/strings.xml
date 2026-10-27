@@ -1,14 +1,64 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Z.ai</string>
-    <string name="error_title">Bağlantı xətası</string>
-    <string name="error_message">Səhifə yüklənə bilmədi. İnternet bağlantınızı yoxlayıb yenidən cəhd edin.</string>
+
+    <!-- Chat -->
+    <string name="input_hint">Mesaj yazın…</string>
+    <string name="send">Göndər</string>
+    <string name="new_chat">Yeni söhbət</string>
+    <string name="thinking">Düşünür…</string>
+    <string name="thought">Düşünmə prosesi</string>
+    <string name="show_thinking">göstər</string>
+    <string name="waiting">Cavab gözlənilir…</string>
     <string name="retry">Yenidən cəhd et</string>
-    <string name="choose_file">Fayl seç</string>
-    <string name="download_started">Endirilmə başladı:</string>
-    <string name="download_failed">Endirmə alınmadı</string>
-    <string name="storage_denied">Saxlama icazəsi verilmədiyi üçün endirmə mümkün deyil</string>
-    <string name="unsupported_download">Bu fayl tətbiqdən endirilə bilmir</string>
-    <string name="mic_permission_needed">Səsli giriş üçün mikrofon icazəsi lazımdır</string>
-    <string name="no_app_found">Bu keçidi açan tətbiq tapılmadı</string>
+    <string name="copied">Kopyalandı</string>
+    <string name="copy">Kopyala</string>
+    <string name="greeting_title">Salam! 👋</string>
+    <string name="greeting_sub">Z.ai köməkçinizə sual verin — yazın, kodlaşdırın, tərcümə edin</string>
+    <string name="chip_write">✍️ Mətn yaz</string>
+    <string name="chip_code">💻 Kod yaz</string>
+    <string name="chip_translate">🌐 Tərcümə et</string>
+
+    <!-- Modellər -->
+    <string name="select_model">Model seç</string>
+    <string name="model_locked">Bu model qonaq rejimində bağlıdır. Premium modellər üçün Parametrlər bölməsində hesab tokeni əlavə edin.</string>
+    <string name="models_failed">Modellər alınmadı: </string>
+    <string name="close">Bağla</string>
+
+    <!-- Tarixçə -->
+    <string name="history_title">Söhbətlər</string>
+    <string name="history_empty">Hələ söhbət yoxdur.\nYeni söhbət başladın!</string>
+    <string name="long_press_hint">basılı saxla → sil</string>
+    <string name="delete_chat_title">Söhbəti sil?</string>
+    <string name="delete_chat_msg">Bu söhbət və bütün mesajları silinəcək.</string>
+    <string name="delete">Sil</string>
+    <string name="cancel">Ləğv et</string>
+
+    <!-- Parametrlər -->
+    <string name="settings_title">Parametrlər</string>
+    <string name="section_account">Hesab</string>
+    <string name="account_fmt">Hazırkı hesab: %1$s\nQonaq rejimində GLM-5.3-Flash modeli istifadə olunur.</string>
+    <string name="account_none">Qonaq (anonim)\nQeydiyyatsız istifadə olunur.</string>
+    <string name="role_guest">qonaq</string>
+    <string name="role_user">istifadəçi</string>
+    <string name="token_note">Premium modellər (GLM-5.3, GLM-5.2) üçün chat.z.ai saytında daxil olub brauzerin localStorage-dəki tokeni buraya köçürün.</string>
+    <string name="token_hint">Hesab tokeni (eyJ…)</string>
+    <string name="token_empty">Token boşdur</string>
+    <string name="token_saved">Token yadda saxlandı — premium modellər açıldı</string>
+    <string name="token_invalid">Token qəbul edilmədi</string>
+    <string name="checking">Yoxlanılır…</string>
+    <string name="save_and_check">Yadda saxla və yoxla</string>
+    <string name="logout">Çıxış (qonaq qayıt)</string>
+    <string name="logged_out">Çıxıldı — növbəti açılışda yeni qonaq hesabı yaradılacaq</string>
+    <string name="section_data">Məlumatlar</string>
+    <string name="wipe_button">Bütün söhbətləri sil</string>
+    <string name="wipe_title">Hamısını sil?</string>
+    <string name="wipe_msg">Bütün söhbət tarixçəsi silinəcək. Bu əməliyyat geri qaytarıla bilməz.</string>
+    <string name="wipe_done">Bütün söhbətlər silindi</string>
+    <string name="section_about">Haqqında</string>
+    <string name="about_text">Z.ai Mobile v2.0 — tam nativ Android müştəri.\n\nBackend: chat.z.ai rəsmi API-si (GLM modelləri).\nSöhbətlər yalnız cihazınızda (SQLite) saxlanılır.\nMarkdown dəstəyi, düşünmə rejemi, stream cavablar.</string>
+
+    <!-- Xətalar -->
+    <string name="auth_failed">Bağlantı alınmadı. İnterneti yoxlayıb tətbiqi yenidən açın.</string>
+    <string name="preparing">Hazırlanır… bir azdan cəhd edin</string>
 </resources>

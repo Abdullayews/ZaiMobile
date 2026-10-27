@@ -1,55 +1,46 @@
 # Z.ai Mobile 📱
 
-**chat.z.ai** saytının yüngül, WebView əsaslı Android tətbiqi. Brauzerdəki donma və yaddaş problemlərini aradan qaldırmaq üçün hazırlanıb — eyni interfeys, amma müstəqil tətbiq kimi işləyir.
+**chat.z.ai** üçün **tam nativ** Android müştərisi — WebView yox, öz interfeysi olan əsl proqram. Mesanjer kimi işləyir, chat.z.ai-nin rəsmi backend API-si ilə birbaşa danışır.
 
-## 📥 APK-nı endir
+## 📥 APK endir
 
 1. **[Releases](https://github.com/Abdullayews/ZaiMobile/releases)** səhifəsinə keçin
-2. Ən son buraxılışdan **`ZaiMobile-v1.0.apk`** faylını endirin
+2. Ən son buraxılışdan **`ZaiMobile-v2.0-native.apk`** faylını endirin
 3. Telefonda faylı açın → "Naməlum mənbələrdən quraşdırma" icazəsi verin → quraşdırın
 
 Hər `main` branch-ına push edildikdə APK **avtomatik yenidən qurulur** (GitHub Actions).
 
-## ✨ Xüsusiyyətlər
+## ✨ Xüsusiyyətlər (v2.0 — nativ)
 
-- 🗨️ chat.z.ai birbaşa tətbiqdə açılır (login, söhbət, bütün funksiyalar)
-- 🖼️ Şəkil və fayl göndərmə (file chooser, çoxsaylı seçim dəstəyi)
-- ⬇️ Fayl endirmə ( sistem Download Manager, bildirişlə birlikdə)
-- 👆 Aşağı çəkib buraxaraq yeniləmə (swipe-to-refresh)
-- 🔄 **Donma bərpası:** 45 saniyədən çox çəkən yükləmə avtomatik reload olunur; WebView render-prosesi qəzalandıqda tətbiq özünü bərpa edir; internet bərpa olanda səhifə avtomatik yenidən yüklənir
-- 🎤 Səsli giriş üçün mikrofon dəstəyi
-- 🎬 Tam ekran video dəstəyi
-- 🌙 Tünd rejim uyğunluğu
-- 🔗 Xarici keçidlər brauzerdə açılır (z.ai domenləri tətbiqdə qalır)
+- 🗨️ **Tam nativ UI** — mesaj qabarcıqları, markdown render, Material Design 3
+- ⚡ **Stream cavablar** — mətn real-time, hissə-hissə gəlir (SSE)
+- 🧠 **Düşünmə rejimi** — modelin reasoning prosesini göstər/gizlət
+- 📚 **Tarixçə** — bütün söhbətlər cihazda saxlanılır (SQLite), heç bir serverə göndərilmir
+- 🤖 **Model seçimi** — GLM-5.3-Flash (qonaq, pulsuz), GLM-5.3 / GLM-5.2 (premium)
+- 👤 **Qonaq rejimi** — heç bir qeydiyyat lazım deyil, avtomatik anonim hesab
+- 🔑 **Premium token dəstəyi** — chat.z.ai hesabınızın tokenini Parametrlərdən əlavə edin
+- 🌙 Tünd rejim, mesaj kopyalama, cavabı dayandırma, xətada yenidən cəhd
+
+## 🔧 Texniki arxitektura
+
+| Təbəqə | Texnologiya |
+|--------|-------------|
+| UI | Java + Material 3 + RecyclerView + Markwon (markdown) |
+| Şəbəkə | OkHttp + SSE (Server-Sent Events) |
+| Məlumat | SQLite (chats, messages) + SharedPreferences |
+| Backend | `chat.z.ai` rəsmi API: `/api/v1/auths/`, `/api/models`, `/api/v2/chat/completions` |
+
+Mühit: Android 7.0+ (minSdk 24), hədəf Android 14 (API 34).
 
 ## ⚠️ Məlum məhdudiyyətlər
 
-- **Google/Apple ilə giriş** özəl təhlükəsizlik siyasətlərinə görə WebView daxilində bloklanır — e-poçt/telefon ilə giriş istifadə edin
-- `blob:` formatlı endirmələr (bəzi sayt xüsusiyyətləri) dəstəklənmir
-
-## 🔧 Mənbədən qurma (özünüz)
-
-```bash
-git clone https://github.com/Abdullayews/ZaiMobile.git
-cd ZaiMobile
-gradle assembleRelease
-# Nəticə: app/build/outputs/apk/release/app-release.apk
-```
-
-Və ya sadəcə **Actions** tab-ında "Android APK Build" workflow-unu işə salın (Run workflow).
+- Fayl/şəkil göndərmə hələ yoxdur (növbəti versiyalarda)
+- Premium modellər üçün öz hesab tokeniniz lazımdır (Parametrlər → Hesab)
+- Nadir hallarda server captcha tələb edə bilər — bu halda rəsmi saytdan istifadə edin
 
 ## 🔐 İmzalama
 
-Release APK repoda saxlanmayan `zai-release.keystore` ilə imzalanır. Açar və parollar GitHub Secrets-də saxlanılır:
-
-| Secret | Təyinat |
-|--------|---------|
-| `KEYSTORE_BASE64` | base64 ilə kodlanmış keystore faylı |
-| `KEYSTORE_PASSWORD` | keystore parolu |
-| `KEY_ALIAS` | açar ləqəbi (`zai`) |
-| `KEY_PASSWORD` | açar parolu |
-
-Gələcək yeniləmələr eyni açarla imzalanmalıdır — əks halda istifadəçilər tətbiqi silib yenidən quraşdırmalı olur.
+Release APK repoda saxlanmayan `zai-release.keystore` ilə imzalanır. Açar və parollar GitHub Secrets-də saxlanılır. Gələcək yeniləmələr eyni açarla imzalanmalıdır.
 
 ## 📜 Lisenziya
 

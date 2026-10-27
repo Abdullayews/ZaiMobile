@@ -45,31 +45,37 @@ jobs:
         run: gradle assembleRelease --no-daemon --stacktrace
 
       - name: APK-nı yenidən adlandır
-        run: mv app/build/outputs/apk/release/app-release.apk ZaiMobile-v1.0.apk
+        run: mv app/build/outputs/apk/release/app-release.apk ZaiMobile-v2.0-native.apk
 
       - name: APK-nı artifact kimi yüklə
         uses: actions/upload-artifact@v4
         with:
           name: ZaiMobile-APK
-          path: ZaiMobile-v1.0.apk
+          path: ZaiMobile-v2.0-native.apk
 
       - name: GitHub Release yarat
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0
-          name: Z.ai Mobile v1.0
+          tag_name: v2.0
+          name: Z.ai Mobile v2.0 — Tam nativ tətbiq
           body: |
-            Z.ai Android tətbiqi (WebView əsaslı)
+            **Z.ai Mobile v2.0 — WebView deyil, tam nativ Android tətbiqi!**
+
+            Mesanjer tipli öz interfeysi var — chat.z.ai saytı yüklənmir, birbaşa rəsmi API ilə işləyir.
+
+            **Yeni xüsusiyyətlər:**
+            - 🗨️ Tam nativ chat interfeysi (mesaj qabarcıqları, markdown render)
+            - ⚡ Real-time stream cavablar (SSE)
+            - 🧠 Düşünmə prosesini göstər/gizlət
+            - 📚 Söhbət tarixçəsi (lokal SQLite, cihazdan kənar saxlanmır)
+            - 🤖 Model seçimi (GLM-5.3-Flash qonaq üçün; GLM-5.3/5.2 premium)
+            - 🔐 Qonaq rejimi avtomatik (qeydiyyat lazım deyil) və ya öz tokeninizlə premium
+            - 🌙 Tünd rejim
+            - 📋 Mesaj kopyalama, xətada yenidən cəhd, cavabı dayandır
 
             **Quraşdırma:** APK-nı endirin → telefonda açın → "Naməlum mənbələrdən quraşdırma" icazəsi verin.
-
-            - chat.z.ai birbaşa tətbiqdə açılır
-            - Şəkil/fayl göndərmə və endirmə
-            - Swipe-to-refresh
-            - Donma/qeyri-stabil bağlantı avtomatik bərpası
-            - Səsli giriş (mikrofon) dəstəyi
-            - Tam ekran video dəstəyi
-          files: ZaiMobile-v1.0.apk
+            (v1.0 quraşdırılıbsa, v2.0 üzərinə yazılacaq)
+          files: ZaiMobile-v2.0-native.apk
           make_latest: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

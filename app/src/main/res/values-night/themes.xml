@@ -1,7 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.Zai" parent="android:Theme.Material.NoActionBar">
+    <style name="Theme.Zai" parent="Theme.Material3.Dark.NoActionBar">
         <item name="android:statusBarColor">@color/brand_dark</item>
-        <item name="android:windowBackground">@color/background</item>
+        <item name="android:windowBackground">@color/bg</item>
+        <item name="colorPrimary">@color/brand</item>
+        <item name="colorOnPrimary">#FFFFFF</item>
+    </style>
+
+    <style name="Theme.Zai.Bar" parent="Theme.Material3.Dark">
+        <item name="android:statusBarColor">@color/brand_dark</item>
+        <item name="android:windowBackground">@color/bg</item>
+        <item name="colorPrimary">@color/brand</item>
+        <item name="colorOnPrimary">#FFFFFF</item>
+        <item name="android:textColorPrimary">@color/text_primary</item>
     </style>
 </resources>
