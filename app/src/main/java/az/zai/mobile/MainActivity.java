@@ -346,6 +346,16 @@ public class MainActivity extends Activity {
                 lastLoadedUrl = url;
             }
         }
+
+        @Override
+        public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
+            runOnUiThread(() -> {
+                if (!isFinishing() && !isDestroyed()) {
+                    recreateWebView();
+                }
+            });
+            return true;
+        }
     }
 
     private class ZaiWebChromeClient extends WebChromeClient {
@@ -438,16 +448,6 @@ public class MainActivity extends Activity {
         @Override
         public void onHideCustomView() {
             exitFullscreen();
-        }
-
-        @Override
-        public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
-            runOnUiThread(() -> {
-                if (!isFinishing() && !isDestroyed()) {
-                    recreateWebView();
-                }
-            });
-            return true;
         }
     }
 
@@ -574,7 +574,9 @@ public class MainActivity extends Activity {
     protected void onSaveInstanceState(Bundle outState) {
         super.onSaveInstanceState(outState);
         if (webView != null) {
-            outState.putBundle("zai_web_state", webView.saveState());
+            Bundle webState = new Bundle();
+            webView.saveState(webState);
+            outState.putBundle("zai_web_state", webState);
         }
     }
 
