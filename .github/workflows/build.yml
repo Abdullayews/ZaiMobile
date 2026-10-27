@@ -20,21 +20,24 @@ jobs:
       - name: Rust keş
         uses: Swatinem/rust-cache@v2
 
-      - name: Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: NDK komponentləri
+      # ubuntu-latest-da Android SDK hazır olur (ANDROID_HOME) — yalnız NDK lazımdır
+      - name: NDK quraşdır
         run: |
-          yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager "ndk;27.2.12479018" "platforms;android-35" "build-tools;34.0.0" > /dev/null
+          SDKM=$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager
+          $SDKM --version
+          yes | $SDKM --licenses > /dev/null || true
+          $SDKM --install "ndk;27.2.12479018" > /dev/null
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> $GITHUB_ENV
-          echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/27.2.12479018" >> $GITHUB_ENV
 
-      - name: NDK mühiti
-        run: |
-          TC=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin
-          echo "TOOLCHAIN=$TC" >> $GITHUB_ENV
-          $TC/aarch64-linux-android24-clang --version | head -1
+          # build-tools və platform dinamik tap
+          BT=$(ls $ANDROID_HOME/build-tools/ | sort -V | tail -1)
+          PLAT=$(ls $ANDROID_HOME/platforms/ | sort -V | tail -1)
+          echo "BT_VER=$BT" >> $GITHUB_ENV
+          echo "PLAT_VER=$PLAT" >> $GITHUB_ENV
+          echo "BUILD_TOOLS=$ANDROID_HOME/build-tools/$BT" >> $GITHUB_ENV
+          echo "PLATFORM_JAR=$ANDROID_HOME/platforms/$PLAT/android.jar" >> $GITHUB_ENV
+          echo "build-tools: $BT | platforms: $PLAT"
+          ls $ANDROID_HOME/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang
 
       - name: Build (aarch64-linux-android)
         run: |
@@ -48,7 +51,8 @@ jobs:
       - name: APK yığ
         run: |
           set -e
-          BT=$ANDROID_HOME/build-tools/34.0.0
+          BT=$BUILD_TOOLS
+          JAR=$PLATFORM_JAR
           SO=target/aarch64-linux-android/release/libzai_mobile.so
 
           rm -rf build && mkdir -p build/lib/arm64-v8a
@@ -58,7 +62,7 @@ jobs:
           $BT/aapt2 compile --dir res -o build/res.zip
           $BT/aapt2 link -o build/app-unsigned.apk \
             --manifest AndroidManifest.xml \
-            -I $ANDROID_HOME/platforms/android-35/android.jar \
+            -I $JAR \
             --min-sdk-version 24 --target-sdk-version 35 \
             --version-code 3 --version-name 2.0 \
             build/res.zip
