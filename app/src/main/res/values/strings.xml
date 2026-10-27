@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Z.ai</string>
+    <string name="error_title">Bağlantı xətası</string>
+    <string name="error_message">Səhifə yüklənə bilmədi. İnternet bağlantınızı yoxlayıb yenidən cəhd edin.</string>
+    <string name="retry">Yenidən cəhd et</string>
+    <string name="choose_file">Fayl seç</string>
+    <string name="download_started">Endirilmə başladı:</string>
+    <string name="download_failed">Endirmə alınmadı</string>
+    <string name="storage_denied">Saxlama icazəsi verilmədiyi üçün endirmə mümkün deyil</string>
+    <string name="unsupported_download">Bu fayl tətbiqdən endirilə bilmir</string>
+    <string name="mic_permission_needed">Səsli giriş üçün mikrofon icazəsi lazımdır</string>
+    <string name="no_app_found">Bu keçidi açan tətbiq tapılmadı</string>
+</resources>

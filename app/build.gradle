@@ -1,0 +1,55 @@
+plugins {
+    id 'com.android.application'
+}
+
+// İmza konfiqurasiyası — CI-də mühit dəyişənlərindən oxunur
+def keystoreFilePath = System.getenv('ZAI_KEYSTORE_FILE')
+def keystoreFile = keystoreFilePath != null ? file(keystoreFilePath) : file('zai-release.keystore')
+def keystoreExists = keystoreFile.exists()
+
+android {
+    namespace 'az.zai.mobile'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'az.zai.mobile'
+        minSdk 24
+        targetSdk 34
+        versionCode 1
+        versionName '1.0'
+    }
+
+    if (keystoreExists) {
+        signingConfigs {
+            release {
+                storeFile keystoreFile
+                storePassword System.getenv('ZAI_KEYSTORE_PASSWORD') ?: ''
+                keyAlias System.getenv('ZAI_KEY_ALIAS') ?: 'zai'
+                keyPassword System.getenv('ZAI_KEY_PASSWORD') ?: ''
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            if (keystoreExists) {
+                signingConfig signingConfigs.release
+            }
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    lint {
+        checkReleaseBuilds false
+        abortOnError false
+    }
+}
+
+dependencies {
+    implementation 'androidx.swiperefreshlayout:swiperefreshlayout:1.1.0'
+}

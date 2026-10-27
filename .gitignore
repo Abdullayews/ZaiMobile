@@ -1,0 +1,22 @@
+# Build çıxışları
+build/
+app/build/
+.gradle/
+local.properties
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# İmza açarları heç vaxt repoya düşməməlidir!
+*.keystore
+*.jks
+!debug.keystore
+
+# Sistem
+.DS_Store
+Thumbs.db
+captures/
+.cxx/
+.externalNativeBuild/
