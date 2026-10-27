@@ -28,6 +28,7 @@ jobs:
           yes | $SDKM --licenses > /dev/null || true
           $SDKM --install "ndk;27.2.12479018" > /dev/null
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> $GITHUB_ENV
+          echo "TOOLCHAIN=$ANDROID_HOME/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_ENV
 
           # build-tools və platform dinamik tap
           BT=$(ls $ANDROID_HOME/build-tools/ | sort -V | tail -1)
