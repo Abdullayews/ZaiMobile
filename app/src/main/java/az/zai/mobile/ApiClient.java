@@ -149,23 +149,27 @@ public final class ApiClient {
             if (!r.isSuccessful() || r.body() == null) {
                 throw new IOException("Modellər alınmadı: HTTP " + r.code());
             }
-            JSONObject root = new JSONObject(r.body().string());
-            JSONArray arr = root.getJSONArray("data");
-            List<ModelInfo> out = new ArrayList<>();
-            for (int i = 0; i < arr.length(); i++) {
-                JSONObject m = arr.getJSONObject(i);
-                ModelInfo mi = new ModelInfo();
-                mi.id = m.optString("id");
-                mi.name = m.optString("name", mi.id);
-                try {
-                    mi.description = m.getJSONObject("info").getJSONObject("meta")
-                            .getJSONObject("info").getJSONObject("desc").optString("en", "");
-                } catch (Exception ignored) {
-                    mi.description = "";
+            try {
+                JSONObject root = new JSONObject(r.body().string());
+                JSONArray arr = root.getJSONArray("data");
+                List<ModelInfo> out = new ArrayList<>();
+                for (int i = 0; i < arr.length(); i++) {
+                    JSONObject m = arr.getJSONObject(i);
+                    ModelInfo mi = new ModelInfo();
+                    mi.id = m.optString("id");
+                    mi.name = m.optString("name", mi.id);
+                    try {
+                        mi.description = m.getJSONObject("info").getJSONObject("meta")
+                                .getJSONObject("info").getJSONObject("desc").optString("en", "");
+                    } catch (Exception ignored) {
+                        mi.description = "";
+                    }
+                    out.add(mi);
                 }
-                out.add(mi);
+                return out;
+            } catch (org.json.JSONException e) {
+                throw new IOException("Model cavabı oxuna bilmədi", e);
             }
-            return out;
         } finally {
             r.close();
         }
