@@ -1,81 +1,105 @@
-name: Android APK Build
+name: Build APK (Rust)
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
 
-concurrency:
-  group: apk-build
-  cancel-in-progress: true
-
 jobs:
   build:
-    name: Build Release APK
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
     steps:
-      - name: Kodu yüklə
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: JDK 17 quraşdır
-        uses: actions/setup-java@v4
+      - name: Rust quraşdır
+        uses: dtolnay/rust-toolchain@stable
         with:
-          distribution: temurin
-          java-version: '17'
+          targets: aarch64-linux-android
 
-      - name: Gradle 8.7 quraşdır
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.7'
+      - name: Rust keş
+        uses: Swatinem/rust-cache@v2
 
-      - name: İmza açarını deşifrə et
-        env:
-          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+      - name: Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: NDK komponentləri
         run: |
-          echo "$KEYSTORE_BASE64" | base64 -d > app/zai-release.keystore
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "ndk;27.2.12479018" "platforms;android-35" "build-tools;34.0.0" > /dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> $GITHUB_ENV
+          echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/27.2.12479018" >> $GITHUB_ENV
 
-      - name: Release APK qur
-        env:
-          ZAI_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          ZAI_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          ZAI_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-        run: gradle assembleRelease --no-daemon --stacktrace
+      - name: NDK mühiti
+        run: |
+          TC=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin
+          echo "TOOLCHAIN=$TC" >> $GITHUB_ENV
+          $TC/aarch64-linux-android24-clang --version | head -1
 
-      - name: APK-nı yenidən adlandır
-        run: mv app/build/outputs/apk/release/app-release.apk ZaiMobile-v2.0-native.apk
+      - name: Build (aarch64-linux-android)
+        run: |
+          export AR=$TOOLCHAIN/llvm-ar
+          export CC_aarch64_linux_android=$TOOLCHAIN/aarch64-linux-android24-clang
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$TOOLCHAIN/aarch64-linux-android24-clang
+          export RUSTFLAGS="-C link-arg=-landroid"
+          cargo build --release --target aarch64-linux-android --lib
+          ls -la target/aarch64-linux-android/release/libzai_mobile.so
 
-      - name: APK-nı artifact kimi yüklə
+      - name: APK yığ
+        run: |
+          set -e
+          BT=$ANDROID_HOME/build-tools/34.0.0
+          SO=target/aarch64-linux-android/release/libzai_mobile.so
+
+          rm -rf build && mkdir -p build/lib/arm64-v8a
+          cp $SO build/lib/arm64-v8a/
+
+          # res kompilyasiya + link (manifest + ikonlar)
+          $BT/aapt2 compile --dir res -o build/res.zip
+          $BT/aapt2 link -o build/app-unsigned.apk \
+            --manifest AndroidManifest.xml \
+            -I $ANDROID_HOME/platforms/android-35/android.jar \
+            --min-sdk-version 24 --target-sdk-version 35 \
+            --version-code 3 --version-name 2.0 \
+            build/res.zip
+
+          # .so faylını düzgün qovluq yolu ilə əlavə et
+          cd build
+          zip -q app-unsigned.apk lib/arm64-v8a/libzai_mobile.so
+          cd ..
+
+          # hizala + imzala
+          $BT/zipalign -f -p 4 build/app-unsigned.apk build/app-aligned.apk
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > build/zai-release.keystore
+          $BT/apksigner sign \
+            --ks build/zai-release.keystore \
+            --ks-key-alias zai \
+            --ks-pass pass:${{ secrets.KEYSTORE_PASSWORD }} \
+            --key-pass pass:${{ secrets.KEY_PASSWORD }} \
+            --out ZaiMobile-v2.0.apk build/app-aligned.apk
+          $BT/apksigner verify --print-certs ZaiMobile-v2.0.apk | head -4
+          ls -la ZaiMobile-v2.0.apk
+
+      - name: Artifakt
         uses: actions/upload-artifact@v4
         with:
-          name: ZaiMobile-APK
-          path: ZaiMobile-v2.0-native.apk
+          name: ZaiMobile-v2.0
+          path: ZaiMobile-v2.0.apk
 
-      - name: GitHub Release yarat
+      - name: Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v2.0
-          name: Z.ai Mobile v2.0 — Tam nativ tətbiq
+          name: Z.ai Native v2.0 — 100% Rust
           body: |
-            **Z.ai Mobile v2.0 — WebView deyil, tam nativ Android tətbiqi!**
+            Tam native Rust versiyası — WebView tamamilə silindi.
 
-            Mesanjer tipli öz interfeysi var — chat.z.ai saytı yüklənmir, birbaşa rəsmi API ilə işləyir.
-
-            **Yeni xüsusiyyətlər:**
-            - 🗨️ Tam nativ chat interfeysi (mesaj qabarcıqları, markdown render)
-            - ⚡ Real-time stream cavablar (SSE)
-            - 🧠 Düşünmə prosesini göstər/gizlət
-            - 📚 Söhbət tarixçəsi (lokal SQLite, cihazdan kənar saxlanmır)
-            - 🤖 Model seçimi (GLM-5.3-Flash qonaq üçün; GLM-5.3/5.2 premium)
-            - 🔐 Qonaq rejimi avtomatik (qeydiyyat lazım deyil) və ya öz tokeninizlə premium
-            - 🌙 Tünd rejim
-            - 📋 Mesaj kopyalama, xətada yenidən cəhd, cavabı dayandır
-
-            **Quraşdırma:** APK-nı endirin → telefonda açın → "Naməlum mənbələrdən quraşdırma" icazəsi verin.
-            (v1.0 quraşdırılıbsa, v2.0 üzərinə yazılacaq)
-          files: ZaiMobile-v2.0-native.apk
-          make_latest: true
+            • 100% Rust (egui + GPU render) — brauzer yoxdur, ~10MB
+            • chat.z.ai veb protokolu: signature + SSE streaming
+            • Qonaq rejimi avtomatik + hesab tokeni ilə daxilolma
+            • Söhbət tarixçəsi, markdown, kod blokları, kopyalama
+            • Düşünmə / axtarış fazaları canlı göstərilir
+            • Model seçimi (GLM-5.3 / Flash / 5.2)
+          files: ZaiMobile-v2.0.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

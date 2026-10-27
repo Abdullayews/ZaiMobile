@@ -1,47 +1,56 @@
-# Z.ai Mobile 📱
+# ZaiMobile — Z.ai Native Android (100% Rust)
 
-**chat.z.ai** üçün **tam nativ** Android müştərisi — WebView yox, öz interfeysi olan əsl proqram. Mesanjer kimi işləyir, chat.z.ai-nin rəsmi backend API-si ilə birbaşa danışır.
+Z.ai (chat.z.ai) üçün tam **native** Android klienti. **WebView yoxdur** — bütün interfeys
+Rust + egui ilə GPU-da render olunur, bütün şəbəkə əməliyyatları Rust-da birbaşa
+chat.z.ai veb API-si üzərindən gedir.
 
-## 📥 APK endir
+## Arxitektura
 
-1. **[Releases](https://github.com/Abdullayews/ZaiMobile/releases)** səhifəsinə keçin
-2. Ən son buraxılışdan **`ZaiMobile-v2.0-native.apk`** faylını endirin
-3. Telefonda faylı açın → "Naməlum mənbələrdən quraşdırma" icazəsi verin → quraşdırın
+```
+┌─────────────────────────────────┐
+│  zai.mobile (APK, arm64-v8a)    │
+│                                 │
+│  ┌───────────────────────────┐  │
+│  │  libzai_mobile.so (Rust)  │  │
+│  │                           │  │
+│  │  egui (GPU render)        │  │
+│  │  reqwest (HTTP/SSE)       │  │
+│  │  chat.z.ai veb protokolu  │  │
+│  └───────────────────────────┘  │
+│  NativeActivity (sistem)        │
+└─────────────────────────────────┘
+```
 
-Hər `main` branch-ına push edildikdə APK **avtomatik yenidən qurulur** (GitHub Actions).
+- **UI**: eframe/egui 0.37, Carlito fontu (Azərbaycan əlifbası: ə, ö, ğ, ş, ı tam dəstək)
+- **Şəbəkə**: reqwest + rustls, cookie store, brauzer warm-up
+- **Protokol**: chat.z.ai daxili API (Open WebUI əsaslı)
+  - `GET /api/v1/auths/` — avtomatik qonaq sessiyası
+  - `POST /api/v1/chats/new` — söhbət yaratma
+  - `POST /api/v2/chat/completions` — mesaj göndərmə (X-Signature + SSE)
+  - `GET /api/v1/chats/` — söhbət tarixçəsi
+- **Signature**: veb tətbiqinin HMAC-SHA256 imza alqoritmi (reverse-engineered)
 
-## ✨ Xüsusiyyətlər (v2.0 — nativ)
+## Xüsusiyyətlər
 
-- 🗨️ **Tam nativ UI** — mesaj qabarcıqları, markdown render, Material Design 3
-- ⚡ **Stream cavablar** — mətn real-time, hissə-hissə gəlir (SSE)
-- 🧠 **Düşünmə rejimi** — modelin reasoning prosesini göstər/gizlət
-- 📚 **Tarixçə** — bütün söhbətlər cihazda saxlanılır (SQLite), heç bir serverə göndərilmir
-- 🤖 **Model seçimi** — GLM-5.3-Flash (qonaq, pulsuz), GLM-5.3 / GLM-5.2 (premium)
-- 👤 **Qonaq rejimi** — heç bir qeydiyyat lazım deyil, avtomatik anonim hesab
-- 🔑 **Premium token dəstəyi** — chat.z.ai hesabınızın tokenini Parametrlərdən əlavə edin
-- 🌙 Tünd rejim, mesaj kopyalama, cavabı dayandırma, xətada yenidən cəhd
+- Qonaq rejimi (avtomatik) və hesab tokeni ilə daxilolma
+- Canlı cavab axını (SSE) — mətn yazıldıqca görünür
+- Düşünmə / axtarış fazaları göstərilir
+- Markdown render: başlıqlar, **bold**, `kod`, kod blokları, keçidlər
+- Söhbət tarixçəsi, model seçimi (GLM-5.3 / Flash / 5.2)
+- Stop düyməsi, mesaj kopyalama
 
-## 🔧 Texniki arxitektura
+## Build
 
-| Təbəqə | Texnologiya |
-|--------|-------------|
-| UI | Java + Material 3 + RecyclerView + Markwon (markdown) |
-| Şəbəkə | OkHttp + SSE (Server-Sent Events) |
-| Məlumat | SQLite (chats, messages) + SharedPreferences |
-| Backend | `chat.z.ai` rəsmi API: `/api/v1/auths/`, `/api/models`, `/api/v2/chat/completions` |
+GitHub Actions avtomatik APK yığır (`.github/workflows/build.yml`):
+Rust (aarch64-linux-android) → aapt2 → zipalign → apksigner (imzalı).
 
-Mühit: Android 7.0+ (minSdk 24), hədəf Android 14 (API 34).
+Lokal desktop testi:
 
-## ⚠️ Məlum məhdudiyyətlər
+```bash
+cargo run --bin smoke --release   # şəbəkə protokol testi
+cargo run                          # desktop GUI (Linux)
+```
 
-- Fayl/şəkil göndərmə hələ yoxdur (növbəti versiyalarda)
-- Premium modellər üçün öz hesab tokeniniz lazımdır (Parametrlər → Hesab)
-- Nadir hallarda server captcha tələb edə bilər — bu halda rəsmi saytdan istifadə edin
+## Lizensiya
 
-## 🔐 İmzalama
-
-Release APK repoda saxlanmayan `zai-release.keystore` ilə imzalanır. Açar və parollar GitHub Secrets-də saxlanılır. Gələcək yeniləmələr eyni açarla imzalanmalıdır.
-
-## 📜 Lisenziya
-
-MIT — bax [LICENSE](LICENSE)
+MIT
