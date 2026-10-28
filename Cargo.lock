@@ -5142,11 +5142,12 @@ dependencies = [
 
 [[package]]
 name = "zai-mobile"
-version = "2.1.0"
+version = "3.0.0"
 dependencies = [
  "eframe",
  "egui",
  "env_logger",
+ "image",
  "jni",
  "ndk-context",
  "reqwest",

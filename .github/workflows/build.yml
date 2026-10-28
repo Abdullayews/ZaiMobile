@@ -64,7 +64,7 @@ jobs:
           JAR=$PLATFORM_JAR
           SO=target/aarch64-linux-android/release/libzai_mobile.so
           VC=${{ github.run_number }}
-          VN=2.1.0-beta.$VC
+          VN=3.0.0-beta.$VC
           APK=ZaiMobile-v$VN.apk
           echo "APK_NAME=$APK" >> $GITHUB_ENV
           echo "VERSION_NAME=$VN" >> $GITHUB_ENV
@@ -107,24 +107,22 @@ jobs:
       - name: Beta Release (pre-release)
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v2.1.0-beta.${{ github.run_number }}
-          name: Z.ai Native v2.1.0-beta.${{ github.run_number }} (Beta)
+          tag_name: v3.0.0-beta.${{ github.run_number }}
+          name: Z.ai Native v3.0.0-beta.${{ github.run_number }} (Beta)
           body: |
             ⚡ **Beta buraxılış** — hər push-da GitHub Actions-da avtomatik qurulur və imzalanır.
 
-            Tam native Rust versiyası — WebView tamamilə silindi.
+            **v3.0 — Veb UI-nun piksel-dəqiq native replikası.** WebView yoxdur, hər şey app daxilində.
 
+            • Brauzerdəki chat.z.ai görünüşü 1:1: işıq tema (#F0F0F0), "More than coding..." Crimson Text başlıq, 5 təklif kartı (veb CDN şəkilləri), "Send a Message" kapsulu
+            • Veb-dən çıxarılmış gerçek SVG ikonlar (rasterləşdirilmiş, tint sistemi)
+            • Veb strukturunda tək ekran: nav + məzmun + giriş; tarixçə drawer, sign-in modal, model popup, API menyu — hamısı overlay
+            • Sign-in modal: Continue with Google / Email / Github / Skip (veb dizaynı) + işləyən token daxilolma
+            • Model popup: model siyahısı + Effort slider + "Try advanced features" (veb mətnləri)
+            • Mesajlar: istifadəçi balonları #EAEAEA r12, cavablar markdown + Copy, xətada "No response" + Regenerate (veb davranışı)
             • 100% Rust (egui + GPU render) — brauzer yoxdur, ~5MB
-            • chat.z.ai veb protokolu: signature + SSE streaming
-            • Qonaq rejimi avtomatik + hesab tokeni ilə daxilolma
-            • **Token yapışdırma** — Android sistem buferindən bir düymə ilə (JNI)
-            • **Kopyalama** — cavabları/kodu sistem buferinə (JNI)
-            • **Android back düyməsi** — söhbətdən siyahıya, siyahıda arxa plana
-            • Pulldown-refresh — aşağı çəkib buraxaraq yeniləmə
-            • Avtomatik bərpa — kəsilmədə retry, 180s donma nəzarəti, sessiya yeniləmə
-            • Söhbət tarixçəsi, markdown, kod blokları
-            • Düşünmə / axtarış fazaları canlı göstərilir
-            • Model seçimi (GLM-5.3 / Flash / 5.2)
+            • chat.z.ai veb protokolu: signature + SSE streaming, qonaq avtomatik + token
+            • Token yapışdırma / kopyalama (JNI), Android back, pulldown-refresh, avtomatik bərpa (retry + 180s watchdog + sessiya yeniləmə)
 
             **Quraşdırma:** APK-nı endirin → telefonda açın → "Naməlum mənbələrdən quraşdırmaya" icazə verin.
             Köhnə versiya üzərinə quraşdırıla bilər (eyni imza açarı).

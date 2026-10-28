@@ -1,15 +1,14 @@
+use crate::theme::{TEXT, TEXT_2, bold_family};
 use egui::{Color32, FontFamily, RichText, Ui};
 
-pub const TXT: Color32 = Color32::from_rgb(230, 234, 242);
-pub const DIM: Color32 = Color32::from_rgb(138, 147, 166);
-pub const ACCENT: Color32 = Color32::from_rgb(76, 111, 255);
-pub const CODE_BG: Color32 = Color32::from_rgb(13, 17, 23);
-pub const INLINE_CODE: Color32 = Color32::from_rgb(139, 195, 255);
-pub const LINK: Color32 = Color32::from_rgb(96, 165, 250);
-
-fn bold_family() -> FontFamily {
-    FontFamily::Name(std::sync::Arc::from("bold"))
-}
+/// Veb işıq teması rəngləri (markdown məzmunu)
+pub const TXT: Color32 = TEXT; // #0D0D0D
+pub const DIM: Color32 = TEXT_2; // #5C5C5C
+pub const CODE_BG: Color32 = Color32::from_rgb(246, 246, 247);
+pub const INLINE_CODE_BG: Color32 = Color32::from_rgb(234, 234, 235);
+pub const INLINE_CODE: Color32 = Color32::from_rgb(13, 13, 13);
+pub const LINK: Color32 = Color32::from_rgb(37, 99, 235);
+pub const CODE_BORDER: Color32 = Color32::from_rgb(229, 229, 230);
 
 fn mono_family() -> FontFamily {
     FontFamily::Monospace
@@ -74,16 +73,16 @@ fn render_code_block(ui: &mut Ui, body: &str) {
     egui::Frame::new()
         .fill(CODE_BG)
         .corner_radius(8.0)
-        .inner_margin(egui::Margin::same(10))
+        .inner_margin(egui::Margin::same(12))
         .outer_margin(egui::Margin { left: 0, right: 8, top: 4, bottom: 4 })
-        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(32, 38, 48)))
+        .stroke(egui::Stroke::new(1.0, CODE_BORDER))
         .show(ui, |ui| {
             ui.set_min_width((ui.available_width() - 16.0).max(60.0));
             ui.style_mut().override_text_style = Some(egui::TextStyle::Monospace);
             ui.add(
                 egui::TextEdit::multiline(&mut body.to_owned())
                     .font(egui::TextStyle::Monospace)
-                    .text_color(Color32::from_rgb(201, 209, 217))
+                    .text_color(Color32::from_rgb(24, 24, 27))
                     .desired_width(f32::INFINITY)
                     .interactive(false),
             );
@@ -113,7 +112,7 @@ fn render_text(ui: &mut Ui, text: &str) {
                 RichText::new(h)
                     .family(bold_family())
                     .size(sz)
-                    .color(Color32::WHITE),
+                    .color(TEXT),
             );
             ui.add_space(2.0);
             continue;
@@ -122,7 +121,7 @@ fn render_text(ui: &mut Ui, text: &str) {
         if trimmed.starts_with("- ") || trimmed.starts_with("* ") {
             ui.horizontal_wrapped(|ui| {
                 ui.add_space(10.0);
-                ui.label(RichText::new("•").color(ACCENT));
+                ui.label(RichText::new("•").color(TEXT_2));
                 inline(ui, trimmed[2..].trim());
             });
             continue;
@@ -130,7 +129,7 @@ fn render_text(ui: &mut Ui, text: &str) {
         if let Some(num) = numbered(trimmed) {
             ui.horizontal_wrapped(|ui| {
                 ui.add_space(10.0);
-                ui.label(RichText::new(format!("{}.", num)).color(ACCENT));
+                ui.label(RichText::new(format!("{}.", num)).color(TEXT_2));
                 inline(ui, trimmed[(num.to_string().len() + 2).min(trimmed.len())..].trim());
             });
             continue;
@@ -179,7 +178,7 @@ fn inline(ui: &mut Ui, s: &str) {
             if let Some(end_rel) = s[i + 2..].find("**") {
                 flush(ui, &mut plain);
                 let content = &s[i + 2..i + 2 + end_rel];
-                ui.label(RichText::new(content).family(bold_family()).color(Color32::WHITE));
+                ui.label(RichText::new(content).family(bold_family()).color(TEXT));
                 i += 2 + end_rel + 2;
                 continue;
             }
@@ -192,8 +191,9 @@ fn inline(ui: &mut Ui, s: &str) {
                 ui.label(
                     RichText::new(content)
                         .family(mono_family())
+                        .size(14.0)
                         .color(INLINE_CODE)
-                        .background_color(Color32::from_rgb(28, 33, 43)),
+                        .background_color(INLINE_CODE_BG),
                 );
                 i += 1 + end_rel + 1;
                 continue;
@@ -223,16 +223,4 @@ fn inline(ui: &mut Ui, s: &str) {
         i += ch.len_utf8();
     }
     flush(ui, &mut plain);
-}
-
-/// Kopyalama düyməsi — true qaytarırsa klikləndi
-/// (Android-də JNI sistem buferi, desktop-da egui/arboard buferi)
-pub fn copy_button(ui: &mut Ui, text: &str) -> bool {
-    let r = ui.small(RichText::new("📋 Copy").color(DIM));
-    if r.clicked() {
-        crate::platform::copy_to_clipboard(ui.ctx(), text);
-        true
-    } else {
-        false
-    }
 }

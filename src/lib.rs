@@ -1,11 +1,13 @@
 //! Z.ai native Android klienti — 100% Rust (WebView yoxdur)
 
 pub mod api;
+pub mod icons;
 pub mod md;
 pub mod platform;
 pub mod screens;
 pub mod store;
 pub mod stream;
+pub mod theme;
 pub mod ui;
 
 #[cfg(target_os = "android")]
@@ -21,7 +23,11 @@ fn android_main(app: winit::platform::android::activity::AndroidApp) {
     eframe::run_native(
         "Z.ai",
         options,
-        Box::new(|cc| Ok(Box::new(ui::MyApp::new(cc)))),
+        Box::new(|cc| {
+            let mut app = ui::MyApp::new(cc);
+            app.auto_connect(); // veb kimi: açılışda avtomatik qonaq/token sessiyası
+            Ok(Box::new(app))
+        }),
     )
     .expect("eframe run failed");
 }
@@ -36,6 +42,10 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Z.ai",
         options,
-        Box::new(|cc| Ok(Box::new(ui::MyApp::new(cc)))),
+        Box::new(|cc| {
+            let mut app = ui::MyApp::new(cc);
+            app.auto_connect();
+            Ok(Box::new(app))
+        }),
     )
 }

@@ -1,6 +1,6 @@
 [package]
 name = "zai-mobile"
-version = "2.1.0"
+version = "3.0.0"
 edition = "2021"
 description = "Z.ai native Android client — 100% Rust, WebView yoxdur"
 license = "MIT"
@@ -32,6 +32,7 @@ serde_json = "1"
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
 winit = "0.30"
+image = { version = "0.25", default-features = false, features = ["png"] } # kart/ikon PNG dekodlaşdırması
 
 # Desktop-da pəncərə backend-ləri + log (Android-da yoxdur)
 [target.'cfg(not(target_os = "android"))'.dependencies]

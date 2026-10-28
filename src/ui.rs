@@ -1,25 +1,12 @@
 use crate::api::{ChatSummary, Client};
-use crate::md::{ACCENT, DIM, TXT};
+use crate::icons::{Cards, Icons};
 use crate::stream::{spawn_completion, StreamEvent};
 use crate::store::PersistedState;
+use crate::theme::{BG, HOVER, SURFACE, TEXT, TEXT_2};
 use egui::Color32;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
-
-pub const BG: Color32 = Color32::from_rgb(10, 13, 20);
-pub const PANEL: Color32 = Color32::from_rgb(16, 20, 29);
-pub const BUBBLE_USER: Color32 = Color32::from_rgb(37, 64, 190);
-pub const BUBBLE_AI: Color32 = Color32::from_rgb(22, 27, 39);
-pub const BORDER: Color32 = Color32::from_rgb(34, 41, 54);
-pub const INPUT_BG: Color32 = Color32::from_rgb(20, 25, 36);
-
-#[derive(Clone, PartialEq)]
-pub enum Screen {
-    Welcome,
-    Chats,
-    Chat,
-}
 
 #[derive(Clone)]
 pub struct Msg {
@@ -40,7 +27,6 @@ pub enum BgEvent {
 }
 
 pub struct MyApp {
-    pub screen: Screen,
     pub client: Option<Client>,
     pub persist: PersistedState,
     pub models: Vec<(String, String)>,
@@ -58,15 +44,31 @@ pub struct MyApp {
     pub stop_flag: Option<Arc<AtomicBool>>,
     pub streaming: bool,
     pub connecting: bool,
+    /// İstifadəçi daxilolma düyməsini basıb (startup auto-connect deyil)
+    pub login_pending: bool,
 
     pub tx_bg: Sender<BgEvent>,
     pub rx_bg: Receiver<BgEvent>,
 
     pub token_input: String,
-    pub show_token_help: bool,
+    pub email_input: String,
+    pub pass_input: String,
+    pub search_input: String,
     pub error: Option<String>,
     pub info: Option<String>,
     pub session_id: String,
+
+    // Overlay state (veb kimi: tək ekran + overlay-lər)
+    pub drawer_open: bool,
+    pub signin_open: bool,
+    pub signin_email: bool,
+    pub model_popup: bool,
+    pub api_menu: bool,
+    pub effort: f32,
+
+    // İkonlar + kart şəkilləri (vebdən rasterləşdirilmiş)
+    pub icons: Icons,
+    pub cards: Cards,
 
     // Pulldown-refresh (aşağı çəkib buraxaraq yenilə)
     pub pull_dist: f32,
@@ -76,25 +78,30 @@ pub struct MyApp {
     pub retry_count: u32,
     pub last_prompt: Option<String>,
     pub pending_retry: Option<String>,
+    pub regen_prompt: Option<String>,
     pub last_activity: Option<std::time::Instant>,
     pub egui_ctx: egui::Context,
 }
 
 impl MyApp {
     pub fn new(cc: &eframe::CreationContext) -> Self {
-        // ---------- Tema ----------
-        let mut visuals = egui::Visuals::dark();
+        // ---------- Tema: chat.z.ai veb (işıq) ----------
+        let mut visuals = egui::Visuals::light();
         visuals.panel_fill = BG;
-        visuals.window_fill = PANEL;
-        visuals.extreme_bg_color = INPUT_BG;
-        visuals.widgets.noninteractive.bg_fill = PANEL;
-        visuals.widgets.inactive.bg_fill = INPUT_BG;
-        visuals.widgets.hovered.bg_fill = Color32::from_rgb(28, 35, 49);
-        visuals.widgets.active.bg_fill = Color32::from_rgb(34, 43, 60);
-        visuals.widgets.noninteractive.fg_stroke.color = DIM;
-        visuals.widgets.inactive.fg_stroke.color = TXT;
-        visuals.widgets.hovered.fg_stroke.color = Color32::WHITE;
-        visuals.selection.bg_fill = ACCENT;
+        visuals.window_fill = SURFACE;
+        visuals.extreme_bg_color = SURFACE;
+        visuals.faint_bg_color = BG;
+        visuals.widgets.noninteractive.bg_fill = SURFACE;
+        visuals.widgets.noninteractive.fg_stroke.color = TEXT_2;
+        visuals.widgets.inactive.bg_fill = SURFACE;
+        visuals.widgets.inactive.fg_stroke.color = TEXT;
+        visuals.widgets.hovered.bg_fill = HOVER;
+        visuals.widgets.hovered.fg_stroke.color = TEXT;
+        visuals.widgets.active.bg_fill = HOVER;
+        visuals.widgets.active.fg_stroke.color = TEXT;
+        visuals.selection.bg_fill = Color32::from_rgb(220, 230, 250);
+        visuals.selection.stroke.color = TEXT;
+        visuals.widgets.noninteractive.bg_stroke.color = crate::theme::border_alpha();
         cc.egui_ctx.set_visuals(visuals);
 
         // ---------- Style ----------
@@ -126,7 +133,7 @@ impl MyApp {
         style.spacing.button_padding = egui::vec2(14.0, 8.0);
         });
 
-        // ---------- Fontlar (ə, ö, ğ, ş üçün Carlito) ----------
+        // ---------- Fontlar (ə, ö, ğ, ş üçün Carlito; serif başlıq üçün Tinos) ----------
         let mut fonts = egui::FontDefinitions::default();
         fonts.font_data.insert(
             "carlito".into(),
@@ -138,6 +145,12 @@ impl MyApp {
             "carlito-bold".into(),
             Arc::new(egui::FontData::from_static(include_bytes!(
                 "../assets/fonts/Carlito-Bold.ttf"
+            ))),
+        );
+        fonts.font_data.insert(
+            "crimson-bold".into(),
+            Arc::new(egui::FontData::from_static(include_bytes!(
+                "../assets/fonts/CrimsonText-Bold.ttf"
             ))),
         );
         fonts.font_data.insert(
@@ -160,13 +173,20 @@ impl MyApp {
             egui::FontFamily::Name(std::sync::Arc::from("bold")),
             vec!["carlito-bold".into()],
         );
+        fonts.families.insert(
+            egui::FontFamily::Name(std::sync::Arc::from("serif")),
+            vec!["crimson-bold".into()],
+        );
         cc.egui_ctx.set_fonts(fonts);
+
+        // ---------- İkonlar + kart şəkilləri ----------
+        let icons = Icons::load(&cc.egui_ctx);
+        let cards = Cards::load(&cc.egui_ctx);
 
         let (tx_bg, rx_bg) = std::sync::mpsc::channel::<BgEvent>();
         let persist = crate::store::load();
 
         MyApp {
-            screen: Screen::Welcome,
             client: None,
             persist: persist.clone(),
             models: vec![
@@ -180,7 +200,7 @@ impl MyApp {
                 _ => 0,
             },
             chat_id: None,
-            chat_title: "Yeni söhbət".into(),
+            chat_title: "New Chat".into(),
             messages: Vec::new(),
             input: String::new(),
             chat_list: Vec::new(),
@@ -190,24 +210,64 @@ impl MyApp {
             stop_flag: None,
             streaming: false,
             connecting: false,
+            login_pending: false,
             tx_bg,
             rx_bg,
             token_input: String::new(),
-            show_token_help: false,
+            email_input: String::new(),
+            pass_input: String::new(),
+            search_input: String::new(),
             error: None,
             info: None,
             session_id: persist
                 .session_id
                 .clone()
                 .unwrap_or_else(|| format!("web-{}", crate::api::gen_uuid())),
+            drawer_open: false,
+            signin_open: false,
+            signin_email: false,
+            model_popup: false,
+            api_menu: false,
+            effort: 1.0,
+            icons,
+            cards,
             pull_dist: 0.0,
             pull_armed: false,
             retry_count: 0,
             last_prompt: None,
             pending_retry: None,
+            regen_prompt: None,
             last_activity: None,
             egui_ctx: cc.egui_ctx.clone(),
         }
+    }
+
+    /// Başlanğıcda avtomatik qoşul (veb kimi: saxlanmış token → qonaq)
+    pub fn auto_connect(&mut self) {
+        if self.client.is_none() {
+            self.start_guest();
+        }
+    }
+
+    /// Hesabdan çıx: tokeni sil, təmiz vəziyyətə qayıt, arxa planda qonaq al
+    pub fn sign_out(&mut self) {
+        self.persist.token = None;
+        crate::store::save(&self.persist.clone());
+        self.client = None;
+        self.chat_id = None;
+        self.chat_title = "New Chat".into();
+        self.messages.clear();
+        self.chat_list.clear();
+        self.streaming = false;
+        self.stop_flag = None;
+        self.error = None;
+        self.info = None;
+        self.regen_prompt = None;
+        self.drawer_open = false;
+        self.signin_open = false;
+        self.signin_email = false;
+        self.token_input.clear();
+        self.start_guest();
     }
 
     pub fn model(&self) -> String {
@@ -266,6 +326,7 @@ impl MyApp {
             return;
         }
         self.connecting = true;
+        self.login_pending = true;
         self.error = None;
         let tx = self.tx_bg.clone();
         std::thread::spawn(move || {
@@ -375,6 +436,11 @@ impl MyApp {
     pub fn send_message(&mut self, _ctx: egui::Context) {
         let prompt = self.input.trim().to_string();
         if prompt.is_empty() || self.streaming {
+            return;
+        }
+        // Klient hələ hazır deyilsə (başlanğıc qoşulma) — girişi itirmə, xəbər ver
+        if self.client.is_none() {
+            self.info = Some("Hələ qoşulur — bir an sonra yenidən göndərin".into());
             return;
         }
         self.input.clear();
@@ -515,7 +581,10 @@ impl MyApp {
                     self.last_activity = None;
                     self.last_prompt = None;
                     self.retry_count = 0;
+                    self.regen_prompt = None;
                     self.info = None;
+                    // Yeni chat yaradılıbsa tarixçəni arxa planda yeniləşdir
+                    self.refresh_chats();
                     if let Some(last) = self.messages.last_mut() {
                         if last.role == "assistant" {
                             last.phase = None;
@@ -537,8 +606,12 @@ impl MyApp {
     // ---------- Avtomatik bərpa ----------
 
     /// Axın xətasını emal et: 401 → sessiya yenilə; kəsilmə → təkrar cəhd;
-    /// digər hallarda istifadəçiyə xəta göstər.
+    /// digər hallarda istifadəçiyə xəta göstər (Regenerate üçün promptu saxla).
     fn handle_stream_error(&mut self, e: String) {
+        // Regenerate düyməsi üçün promptu qoru
+        if self.regen_prompt.is_none() {
+            self.regen_prompt = self.last_prompt.clone();
+        }
         let low = e.to_lowercase();
         // 401 — token vaxtı bitib
         if low.contains("401") || low.contains("unauthorized") {
@@ -546,16 +619,19 @@ impl MyApp {
             if self.client.as_ref().map(|c| c.is_guest).unwrap_or(false) {
                 // qonaq: avtomatik yeni qonaq sessiyası al və mesajı təkrar göndər
                 self.pending_retry = self.last_prompt.take();
+                self.regen_prompt = None;
                 self.info = Some("Qonaq sessiyası vaxtı bitdi — yenilənir…".into());
                 self.reauth_guest();
             } else {
-                // hesab tokeni bitib — daxilolma ekranına qaytar
+                // hesab tokeni bitib — qonaq sessiyasına qayıt + daxilolma təklif et
                 self.persist.token = None;
-                crate::store::save(&self.persist);
+                crate::store::save(&self.persist.clone());
                 self.client = None;
-                self.screen = Screen::Welcome;
+                self.signin_open = true;
+                self.signin_email = false;
+                self.start_guest();
                 self.error =
-                    Some("Sessiya vaxtı bitdi — tokeni yenidən daxil edin.".into());
+                    Some("Sessiya vaxtı bitdi — tokeni yenidən daxil edin".into());
             }
             return;
         }
@@ -564,6 +640,7 @@ impl MyApp {
             self.retry_count += 1;
             if let Some(p) = self.last_prompt.take() {
                 self.remove_last_pair();
+                self.regen_prompt = None;
                 self.info = Some(format!(
                     "Bağlantı kəsildi — avtomatik yenidən cəhd ({}/2)…",
                     self.retry_count
@@ -601,7 +678,7 @@ impl MyApp {
     }
 
     /// Son göndərilən user+assistant cütünü ekrandan çıxar (retry üçün)
-    fn remove_last_pair(&mut self) {
+    pub fn remove_last_pair(&mut self) {
         if self
             .messages
             .last()
@@ -697,7 +774,12 @@ impl MyApp {
                     }
                     if self.connecting {
                         self.connecting = false;
-                        self.screen = Screen::Chats;
+                        // daxilolma uğurludursa modalı bağla (startup auto-connect yox)
+                        if self.login_pending {
+                            self.login_pending = false;
+                            self.signin_open = false;
+                            self.signin_email = false;
+                        }
                         self.save_state();
                         self.refresh_chats();
                     }
@@ -711,10 +793,13 @@ impl MyApp {
                     self.chat_title = title;
                     self.messages = msgs;
                     self.list_loading = false;
-                    self.screen = Screen::Chat;
+                    self.drawer_open = false;
+                    self.error = None;
+                    self.info = None;
+                    self.regen_prompt = None;
                 }
                 BgEvent::Title(t) => {
-                    if t != "New Chat" && !t.is_empty() && self.chat_title == "Yeni söhbət" {
+                    if t != "New Chat" && !t.is_empty() && (self.chat_title == "New Chat" || self.chat_title == "Yeni söhbət") {
                         self.chat_title = t.clone();
                         for c in &mut self.chat_list {
                             if Some(&c.id) == self.chat_id.as_ref() {
@@ -729,6 +814,7 @@ impl MyApp {
                         continue;
                     }
                     self.connecting = false;
+                    self.login_pending = false;
                     self.list_loading = false;
                     self.error = Some(e);
                 }
