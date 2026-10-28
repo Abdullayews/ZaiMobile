@@ -226,10 +226,11 @@ fn inline(ui: &mut Ui, s: &str) {
 }
 
 /// Kopyalama düyməsi — true qaytarırsa klikləndi
+/// (Android-də JNI sistem buferi, desktop-da egui/arboard buferi)
 pub fn copy_button(ui: &mut Ui, text: &str) -> bool {
-    let r = ui.small(RichText::new("⧉ Copy").color(DIM));
+    let r = ui.small(RichText::new("📋 Copy").color(DIM));
     if r.clicked() {
-        ui.ctx().copy_text(text.to_string());
+        crate::platform::copy_to_clipboard(ui.ctx(), text);
         true
     } else {
         false

@@ -639,11 +639,12 @@ impl MyApp {
         });
     }
 
-    /// Axın donmasına nəzarət — 60 saniyə heç bir hadisə gəlməsə kəsib yenidən cəhd et
+    /// Axın donmasına nəzarət — 180 saniyə heç bir hadisə gəlməsə kəsib bərpa et.
+    /// (GLM-in uzun "düşünmə" fazası 60-90 saniyə səssiz ola bilər — ona görə 180s)
     pub fn stream_watchdog(&mut self) {
         if self.streaming {
             if let Some(t) = self.last_activity {
-                if t.elapsed() > std::time::Duration::from_secs(60) {
+                if t.elapsed() > std::time::Duration::from_secs(180) {
                     self.stop_generation();
                     self.handle_stream_error("Axın dondu — avtomatik bərpa".into());
                 }

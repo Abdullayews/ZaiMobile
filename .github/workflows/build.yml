@@ -5,6 +5,11 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# eyni anda yalnız son build işləsin — köhnələri ləğv et
+concurrency:
+  group: build
+  cancel-in-progress: true
+
 permissions:
   contents: write
 
@@ -59,8 +64,8 @@ jobs:
           JAR=$PLATFORM_JAR
           SO=target/aarch64-linux-android/release/libzai_mobile.so
           VC=${{ github.run_number }}
-          VN=2.0.0-beta.$VC
-          APK=ZaiMobile-$VN.apk
+          VN=2.1.0-beta.$VC
+          APK=ZaiMobile-v$VN.apk
           echo "APK_NAME=$APK" >> $GITHUB_ENV
           echo "VERSION_NAME=$VN" >> $GITHUB_ENV
 
@@ -102,17 +107,22 @@ jobs:
       - name: Beta Release (pre-release)
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v2.0.0-beta.${{ github.run_number }}
-          name: Z.ai Native v2.0.0-beta.${{ github.run_number }} (Beta)
+          tag_name: v2.1.0-beta.${{ github.run_number }}
+          name: Z.ai Native v2.1.0-beta.${{ github.run_number }} (Beta)
           body: |
             ⚡ **Beta buraxılış** — hər push-da GitHub Actions-da avtomatik qurulur və imzalanır.
 
             Tam native Rust versiyası — WebView tamamilə silindi.
 
-            • 100% Rust (egui + GPU render) — brauzer yoxdur, ~4MB
+            • 100% Rust (egui + GPU render) — brauzer yoxdur, ~5MB
             • chat.z.ai veb protokolu: signature + SSE streaming
             • Qonaq rejimi avtomatik + hesab tokeni ilə daxilolma
-            • Söhbət tarixçəsi, markdown, kod blokları, kopyalama
+            • **Token yapışdırma** — Android sistem buferindən bir düymə ilə (JNI)
+            • **Kopyalama** — cavabları/kodu sistem buferinə (JNI)
+            • **Android back düyməsi** — söhbətdən siyahıya, siyahıda arxa plana
+            • Pulldown-refresh — aşağı çəkib buraxaraq yeniləmə
+            • Avtomatik bərpa — kəsilmədə retry, 180s donma nəzarəti, sessiya yeniləmə
+            • Söhbət tarixçəsi, markdown, kod blokları
             • Düşünmə / axtarış fazaları canlı göstərilir
             • Model seçimi (GLM-5.3 / Flash / 5.2)
 

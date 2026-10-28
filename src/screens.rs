@@ -15,6 +15,16 @@ impl eframe::App for MyApp {
             self.stream_watchdog();
         }
 
+        // Android back düyməsi: Chat → Siyahı, Siyahı/Qarşılama → arxa plan
+        if ui.input(|i| i.key_pressed(egui::Key::BrowserBack)) {
+            if self.screen == Screen::Chat {
+                self.screen = Screen::Chats;
+                self.refresh_chats();
+            } else {
+                crate::platform::move_task_to_back();
+            }
+        }
+
         match self.screen {
             Screen::Welcome => self.welcome_ui(ui),
             Screen::Chats => self.chats_ui(ui),
@@ -83,22 +93,63 @@ impl MyApp {
                                     "1. Telefonda brauzerdə chat.z.ai açın və hesabınıza daxil olun\n\
                                      2. Brauzer menyusundan 'Saytı araşdır' (Inspect) açın\n\
                                      3. Application → Local Storage → https://chat.z.ai\n\
-                                     4. 'token' açarının dəyərini tam kopyalayın və buraya yapışdırın",
+                                     4. 'token' açarının dəyərini tam kopyalayın\n\
+                                     5. Aşağıdakı 'Yapışdır' düyməsini basın",
                                 )
                                 .size(13.5)
                                 .color(DIM),
                             );
                             ui.add_space(8.0);
                             let mut tok = std::mem::take(&mut self.token_input);
-                            ui.add(
-                                egui::TextEdit::multiline(&mut tok)
-                                    .hint_text("eyJhbGciOiJFUzI1NiIs…")
-                                    .desired_rows(2)
-                                    .desired_width(w - 16.0)
-                                    .font(egui::TextStyle::Monospace)
-                                    .text_color(TXT),
-                            );
+                            let edit = egui::TextEdit::multiline(&mut tok)
+                                .hint_text("eyJhbGciOiJFUzI1NiIs…")
+                                .desired_rows(3)
+                                .desired_width(w - 16.0)
+                                .font(egui::TextStyle::Monospace)
+                                .text_color(TXT);
+                            ui.add(edit);
                             self.token_input = tok;
+
+                            // Yapışdır / Təmizlə
+                            ui.add_space(6.0);
+                            ui.horizontal(|ui| {
+                                let paste_btn = egui::Button::new(
+                                    RichText::new("📋 Yapışdır").size(14.0).color(Color32::WHITE),
+                                )
+                                .fill(ACCENT)
+                                .corner_radius(8.0);
+                                if ui
+                                    .add_sized([(w - 16.0) * 0.62, 36.0], paste_btn)
+                                    .clicked()
+                                {
+                                    match crate::platform::clipboard_get() {
+                                        Ok(t) => {
+                                            let t = t.trim().trim_matches('"').to_string();
+                                            if t.len() >= 40 {
+                                                self.token_input = t;
+                                                self.error = None;
+                                            } else {
+                                                self.error = Some(
+                                                    "Buferdə token görünmür — əvvəlcə chat.z.ai-dən tokeni kopyalayın"
+                                                        .into(),
+                                                );
+                                            }
+                                        }
+                                        Err(e) => self.error = Some(e),
+                                    }
+                                }
+                                let clear_btn = egui::Button::new(
+                                    RichText::new("× Təmizlə").size(14.0).color(DIM),
+                                )
+                                .fill(INPUT_BG)
+                                .corner_radius(8.0);
+                                if ui
+                                    .add_sized([(w - 16.0) * 0.34, 36.0], clear_btn)
+                                    .clicked()
+                                {
+                                    self.token_input.clear();
+                                }
+                            });
                             ui.add_space(6.0);
                             if ui
                                 .add_sized(
@@ -139,7 +190,7 @@ impl MyApp {
                     if icon_button(ui, "⟳", "Yenilə").clicked() {
                         self.refresh_chats();
                     }
-                    if icon_button(ui, "＋", "Yeni söhbət").clicked() {
+                    if icon_button(ui, "+", "Yeni söhbət").clicked() {
                         self.start_new_chat();
                     }
                 });
@@ -263,13 +314,13 @@ impl MyApp {
                         .family(egui::FontFamily::Name(std::sync::Arc::from("bold"))),
                 );
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if icon_button(ui, "＋", "Yeni söhbət").clicked() {
+                    if icon_button(ui, "+", "Yeni söhbət").clicked() {
                         self.start_new_chat();
                     }
                     // model seçici
                     let mresp = ui.add(
                         egui::Button::new(
-                            RichText::new(format!("⌄ {}", model_name))
+                            RichText::new(format!("↓ {}", model_name))
                                 .size(13.5)
                                 .color(DIM),
                         )
@@ -328,7 +379,7 @@ impl MyApp {
                     } else {
                         let enabled = !self.input.trim().is_empty();
                         let btn = egui::Button::new(
-                            RichText::new("➤").size(18.0).color(Color32::WHITE),
+                            RichText::new("→").size(18.0).color(Color32::WHITE),
                         )
                         .corner_radius(10.0);
                         let btn = if enabled { btn.fill(ACCENT) } else { btn.fill(Color32::from_rgb(40, 48, 64)) };

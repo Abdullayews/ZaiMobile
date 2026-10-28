@@ -19,6 +19,7 @@
             android:label="Z.ai"
             android:exported="true"
             android:screenOrientation="fullUser"
+            android:windowSoftInputMode="adjustResize"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode|density|fontScale|locale|layoutDirection">
 
             <meta-data android:name="android.app.lib_name" android:value="zai_mobile" />

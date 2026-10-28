@@ -2,6 +2,7 @@
 
 pub mod api;
 pub mod md;
+pub mod platform;
 pub mod screens;
 pub mod store;
 pub mod stream;
