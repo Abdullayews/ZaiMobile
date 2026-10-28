@@ -1,17 +1,21 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+//! chat.z.ai HTTP API — veb tətbiqinin dəqiq protokolu.
+//! Bütün sorğular: cookie + Origin/Referer + X-Device-ID/X-FE-Version başlıqları ilə,
+//! WAF 405/403 bloklarına qarşı avtomatik retry.
 
-// ---------- Sabitlər ----------
+use serde_json::{json, Value};
+use std::time::Duration;
+
 pub const BASE: &str = "https://chat.z.ai";
 pub const FE_VERSION: &str = "prod-fe-1.1.122";
 pub const MOBILE_UA: &str = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36";
 
 const SIGNATURE_KEY: &str = "key-@@@@)))()((9))-xxxx&&&%%%%%";
 
-// ---------- Köməkçi funksiyalar ----------
+// ---------------- Köməkçilər ----------------
 
 pub fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
 }
@@ -35,63 +39,18 @@ fn form_encode(s: &str) -> String {
     out
 }
 
-/// JS: new Date().toISOString()
 fn iso_now() -> String {
-    // 2026-10-27T21:30:00.123Z — UTC
-    let ms = now_ms();
-    let secs = ms / 1000;
-    let days = secs / 86400;
-    let (y, mo, d, h, mi, s) = civil_from_days(days as i64);
-    format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
-        y, mo, d, h, mi, s,
-        ms % 1000
-    )
+    // 2026-10-28T16:35:01.123Z (UTC) — chrono ilə
+    chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
 }
 
-/// JS: new Date().toUTCString() — "Tue, 28 Oct 2026 01:30:00 GMT"
 fn utc_string_now() -> String {
-    let secs = now_ms() / 1000;
-    let days = (secs / 86400) as i64;
-    let (y, mo, d, h, mi, s) = civil_from_days(days);
-    const WD: [&str; 7] = ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"];
-    const MO: [&str; 12] = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ];
-    let wd = WD[(days % 7) as usize];
-    format!(
-        "{}, {:02} {} {:04} {:02}:{:02}:{:02} GMT",
-        wd, d, MO[(mo - 1) as usize], y, h, mi, s
-    )
+    chrono::Utc::now().format("%a, %d %b %Y %H:%M:%S GMT").to_string()
 }
 
-/// Gün sayından mülki tarixə (Howard Hinnant alqoritmi)
-fn civil_from_days(z: i64) -> (i64, u32, u32, u32, u32, u32) {
-    let z = z + 719468;
-    let era = if z >= 0 { z } else { z - 146096 } / 146097;
-    let doe = (z - era * 146097) as u64;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    let y = if m <= 2 { y + 1 } else { y };
-    let secs_of_day = (now_ms() / 1000) % 86400;
-    (
-        y,
-        m,
-        d,
-        (secs_of_day / 3600) as u32,
-        ((secs_of_day % 3600) / 60) as u32,
-        (secs_of_day % 60) as u32,
-    )
-}
-
-/// HMAC-SHA256 → hex (kiçik hərf)
+/// HMAC-SHA256 → hex
 fn hmac_sha256_hex(key: &[u8], msg: &[u8]) -> String {
     use sha2::{Digest, Sha256};
-    // RFC 2104
     let block = 64usize;
     let mut k = [0u8; 64];
     if key.len() > block {
@@ -113,33 +72,30 @@ fn hmac_sha256_hex(key: &[u8], msg: &[u8]) -> String {
     let mut outer = Sha256::new();
     outer.update(&opad);
     outer.update(&inner_hash);
-    let out = outer.finalize();
-    out.iter().map(|b| format!("{:02x}", b)).collect()
+    outer.finalize().iter().map(|b| format!("{:02x}", b)).collect()
 }
 
-// ---------- Signature (X-Signature) ----------
+// ---------------- Signature ----------------
 
 pub struct SignatureInfo {
     pub signature: String,
     pub timestamp: String,
-    pub request_id: String,
     pub url_params: String,
 }
 
-/// Veb tətbiqinin Zse() + Kse() funksiyalarının dəqiq Rust tərcüməsi
+/// Veb tətbiqinin imza alqoritminin dəqiq Rust tərcüməsi (canlı yoxlanıb)
 pub fn make_signature(prompt: &str, token: &str, user_id: &str) -> SignatureInfo {
     let ts = now_ms();
     let ts_str = ts.to_string();
     let request_id = gen_uuid();
 
-    // sortedPayload: Object.entries({timestamp, requestId, user_id}).sort().join(",")
-    // sıralama: requestId < timestamp < user_id
     let sorted_payload = format!("requestId,{},timestamp,{},user_id,{}", request_id, ts_str, user_id);
 
     // base64(utf8(prompt))
     let prompt_b64 = {
-        let bytes = prompt.trim().as_bytes();
+        // BASE64 standart kitabxanası
         const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let bytes = prompt.trim().as_bytes();
         let mut out = String::new();
         for chunk in bytes.chunks(3) {
             let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
@@ -152,15 +108,12 @@ pub fn make_signature(prompt: &str, token: &str, user_id: &str) -> SignatureInfo
         out
     };
 
-    // data = sortedPayload | base64(prompt) | timestamp
     let data = format!("{}|{}|{}", sorted_payload, prompt_b64, ts_str);
 
-    // g = floor(ts / (5*60*1000))
     let g = ts / 300_000;
     let subkey = hmac_sha256_hex(SIGNATURE_KEY.as_bytes(), g.to_string().as_bytes());
     let signature = hmac_sha256_hex(subkey.as_bytes(), data.as_bytes());
 
-    // urlParams — Kse-in o obyekti (mobile brauzer dəyərləri ilə)
     let fields: Vec<(&str, String)> = vec![
         ("timestamp", ts_str.clone()),
         ("requestId", request_id.clone()),
@@ -205,180 +158,230 @@ pub fn make_signature(prompt: &str, token: &str, user_id: &str) -> SignatureInfo
         .collect::<Vec<_>>()
         .join("&");
 
-    SignatureInfo {
-        signature,
-        timestamp: ts_str,
-        request_id,
-        url_params,
-    }
+    SignatureInfo { signature, timestamp: ts_str, url_params }
 }
 
-// ---------- HTTP klienti ----------
+// ---------------- Client ----------------
 
+/// Reqwest blocking Client — cookie store ilə (acw_tc WAF cookie-ləri daşıyır)
 pub struct Client {
     pub http: reqwest::blocking::Client,
+    pub device_id: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct AuthInfo {
     pub token: String,
     pub user_id: String,
     pub user_name: String,
     pub is_guest: bool,
-    pub device_id: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct ModelInfo {
+    pub id: String,
+    pub name: String,
+    pub enabled: bool,          // guest üçün min_available_level=1 olanlar
+    pub effort_levels: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ConvSummary {
+    pub id: String,
+    pub title: String,
+    pub updated_at: i64,
 }
 
 impl Client {
-    pub fn new() -> Result<Self, String> {
+    pub fn new(device_id: String) -> Result<Self, String> {
         let http = reqwest::blocking::Client::builder()
             .user_agent(MOBILE_UA)
             .cookie_store(true)
-            // ÜMUMİ timeout-u SÖNDÜR: reqwest blocking-də `timeout` bütün sorğunun
-            // (SSE axını oxuma daxil) müddətidir — 30s uzun cavabları ortadan kəsirdi.
-            // SSE axını dəqiqələr çəkə bilər. Yalnız qoşulma fazası limitlidir;
-            // donmuş axını isə UI tərəfində watchdog (60s) bərpa edir.
+            // SSE axını üçün ÜMUMİ timeout YOX — yalnız qoşulma limitli.
+            // Donmuş axını read-timeout (stream.rs) bərpa edir.
             .timeout(None)
-            .connect_timeout(std::time::Duration::from_secs(30))
+            .connect_timeout(Duration::from_secs(30))
             .build()
             .map_err(|e| e.to_string())?;
-        Ok(Client {
-            http,
-            token: String::new(),
-            user_id: String::new(),
-            user_name: String::new(),
-            is_guest: true,
-            device_id: make_device_id(),
+        Ok(Client { http, device_id })
+    }
+
+    fn req(&self, method: reqwest::Method, url: &str) -> reqwest::blocking::RequestBuilder {
+        self.http
+            .request(method, url)
+            .header("User-Agent", MOBILE_UA)
+            .header("X-Device-ID", &self.device_id)
+            .header("X-FE-Version", FE_VERSION)
+            .header("Accept-Language", "en-US")
+            .header("Origin", BASE)
+            .header("Referer", "https://chat.z.ai/")
+    }
+
+    /// WAF blok mu? (Alibaba CDN 405/403 HTML səhifəsi qaytarır)
+    fn is_waf_status(code: u16) -> bool {
+        code == 405 || code == 403 || code == 429 || code == 509
+    }
+
+    /// Sorğunu WAF bloklarına qarşı retry ilə göndər.
+    /// HTML body = WAF bloku; JSON body = real API cavabı.
+    pub fn send_with_retry(
+        &self,
+        build: impl Fn() -> reqwest::blocking::RequestBuilder,
+        attempts: u32,
+    ) -> Result<reqwest::blocking::Response, String> {
+        let mut delay = 2.5f64;
+        let mut last_err = String::from("WAF block");
+        for _attempt in 0..attempts {
+            let resp = build().send().map_err(|e| format!("Network error: {}", e))?;
+            let status = resp.status();
+            if Self::is_waf_status(status.as_u16()) {
+                // body-ni oxuyub HTML olduğunu yoxla (WAF) — sonra retry
+                let body = resp.text().unwrap_or_default();
+                if body.contains("<!doctype") || body.contains("<html") {
+                    last_err = format!("WAF block (HTTP {})", status);
+                    std::thread::sleep(Duration::from_millis(delay as u64 * 1000));
+                    delay = (delay * 1.35).min(9.0);
+                    continue;
+                }
+                // HTML deyil — real API xətasıdı, cavabı geri qaytar
+                // (body artıq oxunduğundan yenidən qurmaq lazımdır)
+                let retry = build().send().map_err(|e| format!("Network error: {}", e))?;
+                return Ok(retry);
+            }
+            return Ok(resp);
+        }
+        Err(format!("{}. Please check your connection and try again.", last_err))
+    }
+
+    // ------------- Endpointlər -------------
+
+    /// Ana səhifə — WAF cookie-lərini (acw_tc) almaq üçün
+    pub fn warm_up_home(&self) {
+        let _ = self.req(reqwest::Method::GET, &format!("{}/", BASE)).send();
+    }
+
+    /// Qonaq tokeni: GET /api/v1/auths/
+    pub fn guest_auth(&self) -> Result<AuthInfo, String> {
+        let resp = self.send_with_retry(
+            || self.req(reqwest::Method::GET, &format!("{}/api/v1/auths/", BASE)),
+            6,
+        )?;
+        let status = resp.status();
+        let body: Value = resp.json().map_err(|_| format!("Bad response (HTTP {})", status))?;
+        if !status.is_success() {
+            return Err(format!("Guest sign-in failed: {}", body["detail"].as_str().unwrap_or("?")));
+        }
+        Ok(AuthInfo {
+            token: body["token"].as_str().ok_or("token missing")?.to_string(),
+            user_id: body["id"].as_str().unwrap_or("").to_string(),
+            user_name: body["name"].as_str().unwrap_or("Guest").to_string(),
+            is_guest: body["role"].as_str() == Some("guest"),
         })
     }
 
-    /// Ucuz klon (reqwest Client Arc-dır)
-    pub fn shallow_clone(&self) -> Client {
-        Client {
-            http: self.http.clone(),
-            token: self.token.clone(),
-            user_id: self.user_id.clone(),
-            user_name: self.user_name.clone(),
-            is_guest: self.is_guest,
-            device_id: self.device_id.clone(),
-        }
-    }
-
-    fn common_headers(&self) -> Vec<(&str, String)> {
-        vec![
-            ("X-Device-ID", self.device_id.clone()),
-            ("X-FE-Version", FE_VERSION.to_string()),
-            ("Accept-Language", "en-US".into()),
-        ]
-    }
-
-    /// Qonaq tokeni al: GET /api/v1/auths/
-    pub fn guest_auth(&mut self) -> Result<(), String> {
-        let mut req = self.http.get(format!("{}/api/v1/auths/", BASE));
-        for (k, v) in self.common_headers() {
-            req = req.header(k, v);
-        }
-        let resp = req.send().map_err(|e| format!("Şəbəkə xətası: {}", e))?;
-        let status = resp.status();
-        let body: serde_json::Value = resp
-            .json()
-            .map_err(|_| format!("Cavab oxunmadı (HTTP {})", status))?;
-        if !status.is_success() {
-            return Err(format!(
-                "Giriş alınmadı: {}",
-                body["detail"].as_str().unwrap_or("bilinməyən xəta")
-            ));
-        }
-        self.token = body["token"]
-            .as_str()
-            .ok_or("token tapılmadı")?
-            .to_string();
-        self.user_id = body["id"].as_str().unwrap_or("").to_string();
-        self.user_name = body["name"].as_str().unwrap_or("Qonaq").to_string();
-        self.is_guest = body["role"].as_str() == Some("guest");
-        Ok(())
-    }
-
-    /// Mövcud tokeni yoxlа: GET /api/v1/auths/ Authorization ilə
-    pub fn verify_token(&mut self, token: &str) -> Result<(), String> {
-        let mut req = self
-            .http
-            .get(format!("{}/api/v1/auths/", BASE))
-            .header("Authorization", format!("Bearer {}", token));
-        for (k, v) in self.common_headers() {
-            req = req.header(k, v);
-        }
-        let resp = req.send().map_err(|e| format!("Şəbəkə xətası: {}", e))?;
-        let status = resp.status();
-        if status.as_u16() == 403 || status.as_u16() == 401 {
-            return Err("Token etibarsızdır və ya vaxtı bitib".into());
-        }
-        let body: serde_json::Value = resp
-            .json()
-            .map_err(|_| format!("Cavab oxunmadı (HTTP {})", status))?;
-        self.token = token.to_string();
-        self.user_id = body["id"].as_str().unwrap_or("").to_string();
-        self.user_name = body["name"].as_str().unwrap_or("İstifadəçi").to_string();
-        self.is_guest = body["role"].as_str() == Some("guest");
-        Ok(())
-    }
-
-    /// Brauzerin açılış sorğularını təkrarla (risk motoruna qarşı "warm-up")
-    pub fn warm_up(&self) {
-        let urls = [
-            format!("{}/api/config", BASE),
-            format!("{}/api/models", BASE),
-            format!("{}/api/v1/users/user/settings/update", BASE),
-            format!("{}/api/v1/user-access/accessible?resource=qrcode-bind", BASE),
-            format!("{}/api/v1/scene-cfg/", BASE),
-        ];
-        for (i, url) in urls.iter().enumerate() {
-            let mut req = if i == 2 {
-                self.http
-                    .post(url)
-                    .header("Authorization", format!("Bearer {}", self.token))
+    /// Email + şifrə ilə giriş: POST /api/v1/auths/signin
+    pub fn signin(&self, email: &str, password: &str) -> Result<AuthInfo, String> {
+        let resp = self.send_with_retry(
+            || {
+                self.req(reqwest::Method::POST, &format!("{}/api/v1/auths/signin", BASE))
                     .header("Content-Type", "application/json")
-                    .json(&serde_json::json!({"ui": {}}))
-            } else {
-                self.http
-                    .get(url)
-                    .header("Authorization", format!("Bearer {}", self.token))
-            };
-            for (k, v) in self.common_headers() {
-                req = req.header(k, v);
+                    .json(&json!({"email": email, "password": password}))
+            },
+            6,
+        )?;
+        let status = resp.status();
+        let body: Value = resp.json().unwrap_or(Value::Null);
+        if !status.is_success() {
+            let detail = body["detail"].as_str().unwrap_or("");
+            if detail.contains("captcha") {
+                return Err("CAPTCHA_REQUIRED".into());
             }
-            let _ = req.send();
+            return Err(format!("Sign-in failed: {}", if detail.is_empty() { "wrong email or password" } else { detail }));
         }
+        Ok(AuthInfo {
+            token: body["token"].as_str().ok_or("token missing")?.to_string(),
+            user_id: body["id"].as_str().unwrap_or("").to_string(),
+            user_name: body["name"].as_str().unwrap_or("User").to_string(),
+            is_guest: body["role"].as_str() == Some("guest"),
+        })
     }
 
-    /// Modellər: GET /api/models
-    pub fn models(&self) -> Result<Vec<(String, String)>, String> {
-        let mut req = self
-            .http
-            .get(format!("{}/api/models", BASE))
-            .header("Authorization", format!("Bearer {}", self.token));
-        for (k, v) in self.common_headers() {
-            req = req.header(k, v);
+    /// Token yoxla: GET /api/v1/auths/ + Bearer
+    pub fn verify_token(&self, token: &str) -> Result<AuthInfo, String> {
+        let resp = self.send_with_retry(
+            || {
+                self.req(reqwest::Method::GET, &format!("{}/api/v1/auths/", BASE))
+                    .header("Authorization", format!("Bearer {}", token))
+            },
+            6,
+        )?;
+        let status = resp.status();
+        if status.as_u16() == 401 || status.as_u16() == 403 {
+            return Err("TOKEN_INVALID".into());
         }
-        let resp = req.send().map_err(|e| e.to_string())?;
-        let body: serde_json::Value = resp.json().map_err(|e| e.to_string())?;
+        let body: Value = resp.json().map_err(|_| format!("Bad response (HTTP {})", status))?;
+        if !status.is_success() {
+            return Err("TOKEN_INVALID".into());
+        }
+        Ok(AuthInfo {
+            token: token.to_string(),
+            user_id: body["id"].as_str().unwrap_or("").to_string(),
+            user_name: body["name"].as_str().unwrap_or("User").to_string(),
+            is_guest: body["role"].as_str() == Some("guest"),
+        })
+    }
+
+    /// Modellər: GET /api/models — guest üçün min_available_level filtri
+    pub fn models(&self, token: &str, is_guest: bool) -> Result<Vec<ModelInfo>, String> {
+        let resp = self.send_with_retry(
+            || {
+                self.req(reqwest::Method::GET, &format!("{}/api/models", BASE))
+                    .header("Authorization", format!("Bearer {}", token))
+            },
+            6,
+        )?;
+        let body: Value = resp.json().map_err(|e| e.to_string())?;
         let mut out = Vec::new();
         if let Some(arr) = body["data"].as_array() {
             for m in arr {
-                if let (Some(id), Some(name)) = (m["id"].as_str(), m["name"].as_str()) {
-                    out.push((id.to_string(), name.to_string()));
+                let id = m["id"].as_str().unwrap_or("").to_string();
+                if id.is_empty() {
+                    continue;
                 }
+                let name = m["name"].as_str().unwrap_or(&id).to_string();
+                let min_level = m["info"]["min_available_level"].as_i64().unwrap_or(1);
+                let enabled = !is_guest || min_level <= 1;
+                let effort_levels: Vec<String> = m["info"]["meta"]["info"]["thinking_effort_level"]
+                    .as_array()
+                    .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                    .unwrap_or_default();
+                out.push(ModelInfo { id, name, enabled, effort_levels });
             }
+        }
+        if out.is_empty() {
+            out.push(ModelInfo {
+                id: "x-preview-l".into(),
+                name: "GLM-5.3-Flash".into(),
+                enabled: true,
+                effort_levels: vec!["low".into(), "high".into(), "max".into()],
+            });
         }
         Ok(out)
     }
 
-    /// Chat siyahısı: GET /api/v1/chats/?page=0&type=default
-    pub fn chat_list(&self) -> Result<Vec<ChatSummary>, String> {
-        let mut req = self
-            .http
-            .get(format!("{}/api/v1/chats/?page=0&type=default", BASE))
-            .header("Authorization", format!("Bearer {}", self.token));
-        for (k, v) in self.common_headers() {
-            req = req.header(k, v);
-        }
-        let resp = req.send().map_err(|e| e.to_string())?;
-        let body: serde_json::Value = resp.json().map_err(|e| e.to_string())?;
+    /// Söhbət siyahısı: GET /api/v1/chats/?page=1&type=default
+    pub fn conversations(&self, token: &str) -> Result<Vec<ConvSummary>, String> {
+        let resp = self.send_with_retry(
+            || {
+                self.req(
+                    reqwest::Method::GET,
+                    &format!("{}/api/v1/chats/?page=1&type=default", BASE),
+                )
+                .header("Authorization", format!("Bearer {}", token))
+            },
+            6,
+        )?;
+        let body: Value = resp.json().map_err(|e| e.to_string())?;
         let mut out = Vec::new();
         if let Some(arr) = body.as_array() {
             for c in arr {
@@ -386,9 +389,9 @@ impl Client {
                 if id.is_empty() {
                     continue;
                 }
-                out.push(ChatSummary {
+                out.push(ConvSummary {
                     id,
-                    title: c["title"].as_str().unwrap_or("Söhbət").to_string(),
+                    title: c["title"].as_str().unwrap_or("Chat").to_string(),
                     updated_at: c["updated_at"].as_i64().unwrap_or(0),
                 });
             }
@@ -396,111 +399,147 @@ impl Client {
         Ok(out)
     }
 
-    /// Chat detalı: GET /api/v1/chats/{id}
-    pub fn chat_detail(&self, id: &str) -> Result<serde_json::Value, String> {
-        let mut req = self
-            .http
-            .get(format!("{}/api/v1/chats/{}", BASE, id))
-            .header("Authorization", format!("Bearer {}", self.token));
-        for (k, v) in self.common_headers() {
-            req = req.header(k, v);
-        }
-        let resp = req.send().map_err(|e| e.to_string())?;
-        let body: serde_json::Value = resp.json().map_err(|e| e.to_string())?;
+    /// Söhbət detalı: GET /api/v1/chats/{id}
+    pub fn chat_detail(&self, token: &str, id: &str) -> Result<Value, String> {
+        let resp = self.send_with_retry(
+            || {
+                self.req(reqwest::Method::GET, &format!("{}/api/v1/chats/{}", BASE, id))
+                    .header("Authorization", format!("Bearer {}", token))
+            },
+            6,
+        )?;
+        let body: Value = resp.json().map_err(|e| e.to_string())?;
         Ok(body)
     }
 
-    /// Yeni chat: POST /api/v1/chats/new
-    pub fn new_chat(&self, prompt: &str, model: &str, user_msg_id: &str) -> Result<String, String> {
-        let ts = now_ms();
-        let chat = serde_json::json!({
-            "id": "",
-            "title": "New Chat",
-            "models": [model],
-            "params": {},
-            "history": {
-                "messages": {
-                    user_msg_id: {
-                        "id": user_msg_id,
-                        "parentId": null,
-                        "childrenIds": [],
-                        "role": "user",
-                        "content": prompt,
-                        "timestamp": ts / 1000,
-                        "models": [model]
-                    }
-                },
-                "currentId": user_msg_id
+    /// Söhbət sil: DELETE /api/v1/chats/{id}
+    pub fn chat_delete(&self, token: &str, id: &str) -> Result<(), String> {
+        let resp = self.send_with_retry(
+            || {
+                self.req(reqwest::Method::DELETE, &format!("{}/api/v1/chats/{}", BASE, id))
+                    .header("Authorization", format!("Bearer {}", token))
             },
-            "tags": [],
-            "flags": ["general_agent"],
-            "features": [
-                {"server": "web_search_h", "status": "hidden", "type": "web_search"},
-                {"server": "tool_selector_h", "status": "hidden", "type": "tool_selector"},
-                {"server": "hidden-thinking", "status": "hidden", "type": "hidden-thinking"}
-            ],
-            "mcp_servers": [],
-            "enable_thinking": true,
-            "reasoning_effort": "high",
-            "auto_web_search": false,
-            "message_version": 1,
-            "extra": {},
-            "timestamp": ts,
-            "type": "general_agent"
-        });
-        let mut req = self
-            .http
-            .post(format!("{}/api/v1/chats/new", BASE))
-            .header("Authorization", format!("Bearer {}", self.token))
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .header("x-region", "overseas")
-            .json(&serde_json::json!({ "chat": chat }));
-        for (k, v) in self.common_headers() {
-            req = req.header(k, v);
+            4,
+        )?;
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(format!("Delete failed (HTTP {})", resp.status()))
         }
-        let resp = req.send().map_err(|e| format!("Şəbəkə: {}", e))?;
+    }
+
+    /// Yeni söhbət: POST /api/v1/chats/new
+    pub fn chat_new(&self, token: &str, prompt: &str, model: &str, user_msg_id: &str) -> Result<String, String> {
+        let chat = chat_new_object(prompt, model, user_msg_id);
+        let resp = self.send_with_retry(
+            || {
+                self.req(reqwest::Method::POST, &format!("{}/api/v1/chats/new", BASE))
+                    .header("Authorization", format!("Bearer {}", token))
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "application/json")
+                    .header("x-region", "overseas")
+                    .json(&json!({ "chat": chat }))
+            },
+            12,
+        )?;
         let status = resp.status();
-        let body: serde_json::Value = resp.json().unwrap_or(serde_json::Value::Null);
+        let body: Value = resp.json().unwrap_or(Value::Null);
         if !status.is_success() {
             return Err(format!(
-                "Chat yaradılmadı (HTTP {}): {}",
+                "Chat could not be created (HTTP {}): {}",
                 status,
                 body["detail"].as_str().unwrap_or("?")
             ));
         }
-        body["id"]
-            .as_str()
-            .map(|s| s.to_string())
-            .ok_or_else(|| "chat id yoxdur".into())
+        body["id"].as_str().map(|s| s.to_string()).ok_or_else(|| "chat id missing".into())
     }
 
-    /// Chat-i yenilə (history saxla): POST /api/v1/chats/{id}
-    pub fn update_chat(&self, id: &str, chat_obj: &serde_json::Value) -> Result<(), String> {
-        let mut req = self
-            .http
-            .post(format!("{}/api/v1/chats/{}", BASE, id))
-            .header("Authorization", format!("Bearer {}", self.token))
-            .header("Content-Type", "application/json")
-            .json(&serde_json::json!({ "chat": chat_obj }));
-        for (k, v) in self.common_headers() {
-            req = req.header(k, v);
-        }
-        let resp = req.send().map_err(|e| e.to_string())?;
-        if !resp.status().is_success() {
-            return Err(format!("Chat yenilənmədi (HTTP {})", resp.status()));
-        }
+    /// Söhbəti yenilə (tarixçəni saxla): POST /api/v1/chats/{id}
+    pub fn chat_update(&self, token: &str, chat_obj: &Value) -> Result<(), String> {
+        let id = chat_obj["id"].as_str().unwrap_or("").to_string();
+        let resp = self.send_with_retry(
+            || {
+                self.req(reqwest::Method::POST, &format!("{}/api/v1/chats/{}", BASE, id))
+                    .header("Authorization", format!("Bearer {}", token))
+                    .header("Content-Type", "application/json")
+                    .json(&json!({ "chat": chat_obj }))
+            },
+            3,
+        )?;
+        let _ = resp;
         Ok(())
+    }
+
+    /// Completion POST (SSE) — WAF retry ilə. Cavabın özini qaytarır.
+    pub fn completions_post(
+        &self,
+        token: &str,
+        url: &str,
+        sig: &str,
+        body: &Value,
+    ) -> Result<reqwest::blocking::Response, String> {
+        let resp = self.send_with_retry(
+            || {
+                self.req(reqwest::Method::POST, url)
+                    .header("Authorization", format!("Bearer {}", token))
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "text/event-stream")
+                    .header("X-Signature", sig)
+                    .json(body)
+            },
+            12,
+        )?;
+        Ok(resp)
     }
 }
 
-fn make_device_id() -> String {
+/// chats/new üçün chat obyekti (veb formatı)
+pub fn chat_new_object(prompt: &str, model: &str, user_msg_id: &str) -> Value {
+    let ts = now_ms();
+    json!({
+        "id": "",
+        "title": "New Chat",
+        "models": [model],
+        "params": {},
+        "history": {
+            "messages": {
+                user_msg_id: {
+                    "id": user_msg_id,
+                    "parentId": null,
+                    "childrenIds": [],
+                    "role": "user",
+                    "content": prompt,
+                    "timestamp": ts / 1000,
+                    "models": [model]
+                }
+            },
+            "currentId": user_msg_id
+        },
+        "tags": [],
+        "flags": ["general_agent"],
+        "features": [
+            {"server": "web_search_h", "status": "hidden", "type": "web_search"},
+            {"server": "tool_selector_h", "status": "hidden", "type": "tool_selector"},
+            {"server": "hidden-thinking", "status": "hidden", "type": "hidden-thinking"}
+        ],
+        "mcp_servers": [],
+        "enable_thinking": true,
+        "reasoning_effort": "high",
+        "auto_web_search": false,
+        "message_version": 1,
+        "extra": {},
+        "timestamp": ts,
+        "type": "general_agent"
+    })
+}
+
+/// Device ID: uid_ + 13 əlifba-rəqəm (brauzer formatı)
+pub fn make_device_id() -> String {
     use std::hash::{BuildHasher, Hasher, RandomState};
     let mut h = RandomState::new().build_hasher();
     h.write_u64(now_ms());
     h.write_usize(std::process::id() as usize);
     let v = h.finish();
-    // uid_ + 13 əlifba-rəqəm (brauzer formatı: /^uid_[A-Za-z0-9]{7,}$/)
     const CS: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     let mut out = String::from("uid_");
     let mut x = v ^ (v >> 29);
@@ -509,11 +548,4 @@ fn make_device_id() -> String {
         out.push(CS[((x >> 33) as usize) % CS.len()] as char);
     }
     out
-}
-
-#[derive(Clone)]
-pub struct ChatSummary {
-    pub id: String,
-    pub title: String,
-    pub updated_at: i64,
 }

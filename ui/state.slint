@@ -1,0 +1,114 @@
+// ============================================================
+//  Qlobal state + məlumat strukturları (dairəvi importları qırmaq
+//  üçün ayrı fayl — bütün ekranlar bunu import edir)
+// ============================================================
+
+// ---------- Məlumat strukturları ----------
+
+export struct MessageBlock {
+    kind: int,       // 0=mətn 1=kod 2=siyahı-elementi 3=başlıq 4=sitat
+    text: string,
+    lang: string,    // kod blokunun dili
+}
+
+export struct ChatMessage {
+    id: string,
+    role: string,    // "user" | "assistant"
+    text: string,    // düz mətn (balon + fallback)
+    blocks: [MessageBlock],
+    streaming: bool,
+    error: bool,
+    stamp: string,   // "14:32"
+}
+
+export struct ConvItem {
+    id: string,
+    title: string,
+    stamp: string,   // "2h ago"
+    active: bool,
+}
+
+export struct ModelItem {
+    id: string,
+    name: string,
+    enabled: bool,
+}
+
+// ---------- Qlobal state ----------
+
+export global App {
+    // ekran vəziyyəti
+    in-out property <bool> booting;            // açılış spinner-i
+    in-out property <bool> sidebar-open;
+    in-out property <bool> streaming;
+    in-out property <string> phase;            // "Thinking…" / "" (axın fazası)
+    in-out property <string> toast;            // qısa bildiriş
+    in-out property <string> banner;           // davamlı xəta lentı (chat üstündə)
+    in-out property <bool> auto-scroll: true;
+    in-out property <int> dot-tick;            // «düşünür» nöqtə animasiyası (Rust timer artırır)
+    in-out property <bool> need-refresh;       // söhbətlər yenilənməlidir
+
+    // istifadəçi
+    in-out property <bool> signed-in;
+    in-out property <bool> is-guest: true;
+    in-out property <string> user-name: "Guest";
+
+    // aktiv söhbət
+    in-out property <string> chat-id;
+    in-out property <string> chat-title: "New Chat";
+    in-out property <[ChatMessage]> messages;
+
+    // tarixçə
+    in-out property <[ConvItem]> conversations;
+    in-out property <bool> history-loading;
+
+    // composer
+    in-out property <string> input-text;
+    in-out property <bool> model-popup-open;
+
+    // modellər
+    in-out property <[ModelItem]> models;
+    in-out property <int> model-index;
+    in-out property <int> effort: 2;           // 0..2 — seçilmiş modelin səviyyələrinə görə
+    in-out property <string> effort-0: "Low";
+    in-out property <string> effort-1: "Medium";
+    in-out property <string> effort-2: "High";
+    out property <string> model-name: models.length > 0 && model-index >= 0 && model-index < models.length ? models[model-index].name : "GLM";
+
+    // signin modal
+    in-out property <bool> signin-open;
+    in-out property <int> signin-tab: 0;       // 0=email 1=token
+    in-out property <string> email;
+    in-out property <string> password;
+    in-out property <string> token-input;
+    in-out property <string> signin-error;
+    in-out property <bool> signin-busy;
+    in-out property <bool> password-visible;
+
+    // ---------- Callbacks (Rust tərəfindən qoşulur) ----------
+    callback send(string);
+    callback stop-generation();
+    callback regenerate();
+    callback new-chat();
+    callback open-conversation(string);
+    callback delete-conversation(string);
+    callback refresh-conversations();
+    callback do-sign-in(string, string);       // email, şifrə
+    callback do-token-sign-in(string);         // token
+    callback continue-as-guest();
+    callback sign-out();
+    callback select-model(int);
+    callback set-effort(int);
+    callback copy-to-clipboard(string);
+
+    // ---------- Yardımçı funksiyalar ----------
+    public function show-toast(msg: string) {
+        toast = msg;
+    }
+    public function current-model() -> string {
+        if (models.length > 0 && model-index >= 0 && model-index < models.length) {
+            return models[model-index].id;
+        }
+        return "glm-5.3";
+    }
+}

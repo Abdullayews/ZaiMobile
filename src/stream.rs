@@ -1,288 +1,56 @@
-use crate::api::{make_signature, now_ms, BASE, FE_VERSION};
-use serde_json::Value;
+//! SSE completion axını: chat yaratma → completions → parçalı yeniləmə →
+//! avtomatik bərpa (şəbəkə kəsilməsi, WAF bloku, 401) → serverdə saxlama.
+//!
+//! Mühüm dərs (v2.1-dən): reqwest blocking-də `timeout()` bütün axını kəsir.
+//! Buna görə: timeout(None) + hər SSE oxunuşu üçün ayrı read-timeout streami
+//! öz threadində idarə edirik (watchdog: 150s fasilə = kəsinti sayılır).
+
+use crate::api::{self, Client, SignatureInfo};
+use crate::markdown;
+use serde_json::{json, Value};
 use std::io::{BufRead, BufReader};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::Sender;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
+/// Axın hadisələri — UI-yə çatdırılır
 #[derive(Clone, Debug)]
 pub enum StreamEvent {
-    /// Cavab mətninin yeni hissəsi
     Delta(String),
-    /// Faza: answer / think / search / tool_response / other
     Phase(String),
-    /// Axın bitdi
     Done,
-    /// Xəta
     Error(String),
-    /// Chat yaradıldı (id)
+    CaptchaRequired,
+    Unauthorized,
     ChatCreated(String),
-    /// Başlıq yeniləndi
-    Title(String),
 }
 
-pub struct CompletionJob {
+/// İşin idarəsi (stop bayrağı + son fəaliyyət vaxtı)
+pub struct Job {
     pub stop: Arc<AtomicBool>,
+    pub last_activity: Arc<Mutex<Instant>>,
 }
 
-/// Tam axın: (lazımsa chats/new) → v2 completions SSE → chat yenilə → başlıq al
-#[allow(clippy::too_many_arguments)]
-pub fn spawn_completion(
-    client: crate::api::Client,
-    chat_id: Option<String>,
-    prompt: String,
-    history: Vec<(String, String)>,            // (role, content) — əvvəlki mesajlar
-    history_ids: Vec<(String, String, String)>, // (id, role, content)
-    user_msg_id: String,
-    assistant_msg_id: String,
-    chat_title: String,
-    is_first: bool,
-    model: String,
-    session_id: String,
-    ctx: egui::Context,
-    tx: Sender<StreamEvent>,
-) -> CompletionJob {
-    let stop = Arc::new(AtomicBool::new(false));
-    let stop2 = stop.clone();
-    std::thread::spawn(move || {
-        let send = |ev: StreamEvent| {
-            let _ = tx.send(ev);
-            ctx.request_repaint();
-        };
-        let result = run_completion(
-            &client,
-            chat_id,
-            &prompt,
-            &history,
-            &history_ids,
-            &user_msg_id,
-            &assistant_msg_id,
-            &chat_title,
-            is_first,
-            &model,
-            &session_id,
-            &stop2,
-            &send,
-        );
-        if let Err(e) = result {
-            send(StreamEvent::Error(e));
-        }
-        send(StreamEvent::Done);
-    });
-    CompletionJob { stop }
+impl Job {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Job {
+            stop: Arc::new(AtomicBool::new(false)),
+            last_activity: Arc::new(Mutex::new(Instant::now())),
+        })
+    }
+    pub fn is_stopped(&self) -> bool {
+        self.stop.load(Ordering::Relaxed)
+    }
+    fn touch(&self) {
+        *self.last_activity.lock().unwrap() = Instant::now();
+    }
+    fn idle_secs(&self) -> u64 {
+        self.last_activity.lock().unwrap().elapsed().as_secs()
+    }
 }
 
-fn common_headers(device_id: &str) -> Vec<(&'static str, String)> {
-    vec![
-        ("X-Device-ID", device_id.to_string()),
-        ("X-FE-Version", FE_VERSION.to_string()),
-        ("Accept-Language", "en-US".into()),
-    ]
-}
-
-#[allow(clippy::too_many_arguments)]
-fn run_completion(
-    client: &crate::api::Client,
-    chat_id: Option<String>,
-    prompt: &str,
-    history: &[(String, String)],
-    history_ids: &[(String, String, String)],
-    user_msg_id: &str,
-    assistant_msg_id: &str,
-    chat_title: &str,
-    is_first: bool,
-    model: &str,
-    session_id: &str,
-    stop: &AtomicBool,
-    send: &impl Fn(StreamEvent),
-) -> Result<(), String> {
-    let http = &client.http;
-    let token = &client.token;
-    let device_id = &client.device_id;
-
-    // ---------- 1. Chat yarad ----------
-    let chat_id = match chat_id {
-        Some(id) => id,
-        None => {
-            let mut req = http
-                .post(format!("{}/api/v1/chats/new", BASE))
-                .header("Authorization", format!("Bearer {}", token))
-                .header("Content-Type", "application/json")
-                .header("Accept", "application/json")
-                .header("x-region", "overseas")
-                .json(&serde_json::json!({
-                    "chat": chat_new_object(prompt, model, user_msg_id)
-                }));
-            for (k, v) in common_headers(device_id) {
-                req = req.header(k, v);
-            }
-            let resp = req.send().map_err(|e| format!("Şəbəkə: {}", e))?;
-            let status = resp.status();
-            let body: Value = resp.json().unwrap_or(Value::Null);
-            if !status.is_success() {
-                return Err(format!(
-                    "Chat yaradılmadı (HTTP {}): {}",
-                    status,
-                    body["detail"].as_str().unwrap_or("bilinməyən")
-                ));
-            }
-            let id = body["id"].as_str().ok_or("chat id yoxdur")?.to_string();
-            send(StreamEvent::ChatCreated(id.clone()));
-            id
-        }
-    };
-
-    // ---------- 2. Signature ----------
-    let sig = make_signature(prompt, token, &client.user_id);
-
-    // ---------- 3. Tarixçə + gövdə ----------
-    let mut messages: Vec<Value> = history
-        .iter()
-        .map(|(r, c)| serde_json::json!({"role": r, "content": c}))
-        .collect();
-    messages.push(serde_json::json!({"role": "user", "content": prompt}));
-
-    let last_user_parent = history_ids
-        .iter()
-        .rev()
-        .find(|(_, r, _)| r == "user")
-        .map(|(id, _, _)| Value::String(id.clone()))
-        .unwrap_or(Value::Null);
-
-    let body = serde_json::json!({
-        "stream": true,
-        "model": model,
-        "messages": messages,
-        "signature_prompt": prompt.trim(),
-        "params": {},
-        "features": {
-            "image_generation": false,
-            "web_search": false,
-            "auto_web_search": false,
-            "preview_mode": false,
-            "flags": ["general_agent"],
-            "vlm_tools_enable": false,
-            "vlm_web_search_enable": false,
-            "vlm_website_mode": false,
-            "enable_thinking": true,
-            "reasoning_effort": "high"
-        },
-        "variables": {},
-        "session_id": session_id,
-        "chat_id": chat_id,
-        "id": assistant_msg_id,
-        "current_user_message_id": user_msg_id,
-        "current_user_message_parent_id": last_user_parent,
-        "background_tasks": {
-            "title_generation": is_first,
-            "tags_generation": is_first
-        }
-    });
-
-    let url = format!(
-        "{}/api/v2/chat/completions?{}&signature_timestamp={}",
-        BASE, sig.url_params, sig.timestamp
-    );
-    let mut req = http
-        .post(&url)
-        .header("Authorization", format!("Bearer {}", token))
-        .header("Content-Type", "application/json")
-        .header("Accept", "text/event-stream")
-        .header("X-Signature", &sig.signature)
-        .json(&body);
-    for (k, v) in common_headers(device_id) {
-        req = req.header(k, v);
-    }
-    let resp = req.send().map_err(|e| format!("Bağlantı xətası: {}", e))?;
-    let status = resp.status();
-    if !status.is_success() {
-        let txt = resp.text().unwrap_or_default();
-        let short: String = txt.chars().take(200).collect();
-        return Err(format!("HTTP {}: {}", status, short));
-    }
-
-    // ---------- 4. SSE oxu ----------
-    let reader = BufReader::new(resp);
-    let mut full_content = String::new();
-    let mut had_error: Option<String> = None;
-    let mut stopped = false;
-    // Axın «done» hadisəsi almadan bitibsə bu şəbəkə kəsintisidir —
-    // qeyd et ki, yuxarıda avtomatik bərpa (retry) işə düşə bilsin.
-    let mut got_done = false;
-    for line in reader.lines() {
-        if stop.load(Ordering::Relaxed) {
-            stopped = true;
-            break;
-        }
-        let line = match line {
-            Ok(l) => l,
-            Err(_) => break, // oxu xətası — aşağıda kəsinti kimi qiymətləndirilir
-        };
-        let line = line.trim().to_string();
-        if line.is_empty() || !line.starts_with("data:") {
-            continue;
-        }
-        let payload = line[5..].trim();
-        if payload == "[DONE]" {
-            got_done = true;
-            break;
-        }
-        let ev: Value = match serde_json::from_str(payload) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        match parse_stream_event(&ev) {
-            Some(StreamEvent::Delta(d)) => {
-                full_content.push_str(&d);
-                send(StreamEvent::Delta(d));
-            }
-            Some(StreamEvent::Phase(p)) => send(StreamEvent::Phase(p)),
-            Some(StreamEvent::Done) => {
-                got_done = true;
-            }
-            Some(StreamEvent::Error(e)) => {
-                had_error = Some(e);
-                break;
-            }
-            _ => {}
-        }
-    }
-
-    // ---------- 5. Chat-i yenilə (veb tətbiqi kimi) ----------
-    if !stopped || !full_content.is_empty() {
-        let chat_obj = build_chat_update(
-            &chat_id,
-            chat_title,
-            model,
-            history_ids,
-            user_msg_id,
-            assistant_msg_id,
-            prompt,
-            &full_content,
-        );
-        let mut req = http
-            .post(format!("{}/api/v1/chats/{}", BASE, chat_id))
-            .header("Authorization", format!("Bearer {}", token))
-            .header("Content-Type", "application/json")
-            .json(&serde_json::json!({ "chat": chat_obj }));
-        for (k, v) in common_headers(device_id) {
-            req = req.header(k, v);
-        }
-        let _ = req.send();
-    }
-
-    if let Some(e) = had_error {
-        return Err(e);
-    }
-    // İstifadəçi dayandırmayıbsa və axın «done» almadan bitibsə — kəsinti
-    if !stopped && !got_done {
-        return Err("Axın kəsildi (şəbəkə)".into());
-    }
-    Ok(())
-}
-
-/// SSE hadisəsini təhlil et — bir neçə mümkün formatı dəstəkləyir
-pub fn parse_stream_event(ev: &Value) -> Option<StreamEvent> {
+/// Axın məzmununun təhlili (bir neçə format dəstəklənir)
+fn parse_stream_event(ev: &Value) -> Option<StreamEvent> {
     let msg = ev
         .pointer("/data/message")
         .or_else(|| ev.pointer("/data/data/message"))
@@ -290,14 +58,11 @@ pub fn parse_stream_event(ev: &Value) -> Option<StreamEvent> {
         .or_else(|| ev.pointer("/data/data/data"));
     if let Some(m) = msg {
         if let Some(err) = m.get("error").filter(|e| !e.is_null()) {
-            let detail = err["detail"]
-                .as_str()
-                .or_else(|| err["message"].as_str())
-                .unwrap_or("Xəta baş verdi");
-            let code = err["code"]
-                .as_str()
-                .or_else(|| err["error_code"].as_str())
-                .unwrap_or("");
+            let code = err["code"].as_str().or_else(|| err["error_code"].as_str()).unwrap_or("");
+            let detail = err["detail"].as_str().or_else(|| err["message"].as_str()).unwrap_or("Error");
+            if code.contains("CAPTCHA") || detail.contains("captcha") {
+                return Some(StreamEvent::CaptchaRequired);
+            }
             return Some(StreamEvent::Error(friendly_error(code, detail)));
         }
         if m["done"].as_bool() == Some(true) {
@@ -317,14 +82,11 @@ pub fn parse_stream_event(ev: &Value) -> Option<StreamEvent> {
     }
     for p in ["/data/error", "/data/data/error", "/error"] {
         if let Some(err) = ev.pointer(p).filter(|e| !e.is_null()) {
-            let detail = err["detail"]
-                .as_str()
-                .or_else(|| err["message"].as_str())
-                .unwrap_or("Xəta baş verdi");
-            let code = err["code"]
-                .as_str()
-                .or_else(|| err["error_code"].as_str())
-                .unwrap_or("");
+            let code = err["code"].as_str().or_else(|| err["error_code"].as_str()).unwrap_or("");
+            let detail = err["detail"].as_str().or_else(|| err["message"].as_str()).unwrap_or("Error");
+            if code.contains("CAPTCHA") || detail.contains("captcha") {
+                return Some(StreamEvent::CaptchaRequired);
+            }
             return Some(StreamEvent::Error(friendly_error(code, detail)));
         }
     }
@@ -332,124 +94,285 @@ pub fn parse_stream_event(ev: &Value) -> Option<StreamEvent> {
 }
 
 fn friendly_error(code: &str, detail: &str) -> String {
-    if code.contains("CAPTCHA") || detail.contains("captcha") {
-        return "Bu sorğu üçün captcha tələb olundu. Qonaq rejimi məhduddur — \
-                öz hesabınızın tokeni ilə daxil olun (telefonda chat.z.ai → daxil ol → \
-                brauzer menyusu → 'Saytı araşdır' → Application → Local Storage → token)."
-            .into();
-    }
     if code == "426" || detail.contains("outdated") {
-        return "Proqram versiyası köhnəlib — yeniləyin.".into();
+        return "App version is outdated — please update.".into();
     }
     if detail.contains("user_limit") || detail.contains("rate_limit") {
-        return "Limitə çatdınız — bir az gözləyin və yenidən cəhd edin.".into();
+        return "Rate limit reached — wait a moment and try again.".into();
     }
     if detail.contains("global_limit") {
-        return "Server sıx işlənir — bir az sonra yenidən cəhd edin.".into();
+        return "The server is busy — try again shortly.".into();
     }
     detail.to_string()
 }
 
 fn phase_label(p: &str) -> String {
     match p {
-        "think" | "thinking" | "hidden-thinking" | "reasoning" => "Düşünür…".into(),
-        "search" | "web_search" => "İnternetdə axtarır…".into(),
-        "tool" | "tool_response" | "tool_call" => "Alət işlədir…".into(),
-        "code" | "code_interpreter" => "Kod icra edir…".into(),
-        "title" => "Başlıq yazır…".into(),
-        _ => "Hazırlanır…".into(),
+        "think" | "thinking" | "hidden-thinking" | "reasoning" => "Thinking…".into(),
+        "search" | "web_search" => "Searching the web…".into(),
+        "tool" | "tool_response" | "tool_call" => "Using tools…".into(),
+        "code" | "code_interpreter" => "Running code…".into(),
+        "title" => "Writing title…".into(),
+        _ => "Preparing…".into(),
     }
 }
 
-/// chats/new üçün chat obyekti
-pub fn chat_new_object(prompt: &str, model: &str, user_msg_id: &str) -> Value {
-    let ts = now_ms();
-    serde_json::json!({
-        "id": "",
-        "title": "New Chat",
-        "models": [model],
-        "params": {},
-        "history": {
-            "messages": {
-                user_msg_id: {
-                    "id": user_msg_id,
-                    "parentId": null,
-                    "childrenIds": [],
-                    "role": "user",
-                    "content": prompt,
-                    "timestamp": ts / 1000,
-                    "models": [model]
+/// Tam completion icrası. Nəticə hadisələri `emit` ilə UI-yə göndərilir.
+#[allow(clippy::too_many_arguments)]
+pub fn run_completion(
+    client: &Client,
+    token: &str,
+    user_id: &str,
+    chat_id: &mut String,
+    chat_title: &str,
+    history: &[(String, String)],       // (role, content) — keçmiş mesajlar
+    prompt: &str,
+    model: &str,
+    effort: &str,
+    user_msg_id: &str,
+    assistant_msg_id: &str,
+    is_first: bool,
+    job: &Job,
+    emit: &mut dyn FnMut(StreamEvent),
+) -> Result<(), String> {
+    // ---------- 1. Chat yarat (lazımsa) ----------
+    if chat_id.is_empty() {
+        let id = client.chat_new(token, prompt, model, user_msg_id)?;
+        *chat_id = id.clone();
+        emit(StreamEvent::ChatCreated(id));
+    }
+
+    // ---------- 2. Əsas axın (retry ilə) ----------
+    let mut attempt = 0u32;
+    let max_attempts = 3u32;
+    loop {
+        attempt += 1;
+        match run_once(
+            client, token, user_id, chat_id, chat_title, history, prompt, model, effort,
+            user_msg_id, assistant_msg_id, is_first, job, emit,
+        ) {
+            Ok(()) => return Ok(()),
+            Err(e) if e == "UNAUTHORIZED" => {
+                return Err("UNAUTHORIZED".into());
+            }
+            Err(e) if e == "CAPTCHA" => {
+                return Err("CAPTCHA".into());
+            }
+            Err(e) if e.starts_with("RETRY:") => {
+                let inner = e.trim_start_matches("RETRY:").to_string();
+                if attempt >= max_attempts || job.is_stopped() {
+                    return Err(inner);
                 }
-            },
-            "currentId": user_msg_id
-        },
-        "tags": [],
-        "flags": ["general_agent"],
-        "features": [
-            {"server": "web_search_h", "status": "hidden", "type": "web_search"},
-            {"server": "tool_selector_h", "status": "hidden", "type": "tool_selector"},
-            {"server": "hidden-thinking", "status": "hidden", "type": "hidden-thinking"}
-        ],
-        "mcp_servers": [],
-        "enable_thinking": true,
-        "reasoning_effort": "high",
-        "auto_web_search": false,
-        "message_version": 1,
-        "extra": {},
-        "timestamp": ts,
-        "type": "general_agent"
-    })
+                std::thread::sleep(Duration::from_millis(1200));
+                continue;
+            }
+            Err(e) => return Err(e),
+        }
+    }
 }
 
-/// Bitdikdən sonra chat-i yeniləmək üçün tam obyekt
+#[allow(clippy::too_many_arguments)]
+fn run_once(
+    client: &Client,
+    token: &str,
+    user_id: &str,
+    chat_id: &str,
+    chat_title: &str,
+    history: &[(String, String)],
+    prompt: &str,
+    model: &str,
+    effort: &str,
+    user_msg_id: &str,
+    assistant_msg_id: &str,
+    is_first: bool,
+    job: &Job,
+    emit: &mut dyn FnMut(StreamEvent),
+) -> Result<(), String> {
+    // ---------- signature ----------
+    let sig: SignatureInfo = api::make_signature(prompt, token, user_id);
+
+    // ---------- body ----------
+    let mut messages: Vec<Value> = history
+        .iter()
+        .map(|(r, c)| json!({"role": r, "content": c}))
+        .collect();
+    messages.push(json!({"role": "user", "content": prompt}));
+
+    let body = json!({
+        "stream": true,
+        "model": model,
+        "messages": messages,
+        "signature_prompt": prompt.trim(),
+        "params": {},
+        "features": {
+            "image_generation": false,
+            "web_search": false,
+            "auto_web_search": false,
+            "preview_mode": false,
+            "flags": ["general_agent"],
+            "vlm_tools_enable": false,
+            "vlm_web_search_enable": false,
+            "vlm_website_mode": false,
+            "enable_thinking": true,
+            "reasoning_effort": effort
+        },
+        "variables": {},
+        "session_id": api::gen_uuid(),
+        "chat_id": chat_id,
+        "id": assistant_msg_id,
+        "current_user_message_id": user_msg_id,
+        "current_user_message_parent_id": Value::Null,
+        "background_tasks": {
+            "title_generation": is_first,
+            "tags_generation": is_first
+        }
+    });
+
+    let url = format!(
+        "{}/api/v2/chat/completions?{}&signature_timestamp={}",
+        api::BASE, sig.url_params, sig.timestamp
+    );
+
+    // ---------- POST (WAF retry daxilidir) ----------
+    job.touch();
+    let resp = client.completions_post(token, &url, &sig.signature, &body)?;
+    let status = resp.status();
+    if status.as_u16() == 401 || status.as_u16() == 403 {
+        // bəzi hallarda WAF 403 JSON qaytarır — captcha yoxdursa unauthorized
+        let txt = resp.text().unwrap_or_default();
+        if txt.contains("captcha") || txt.contains("CAPTCHA") {
+            return Err("CAPTCHA".into());
+        }
+        return Err("UNAUTHORIZED".into());
+    }
+    if !status.is_success() {
+        let txt = resp.text().unwrap_or_default();
+        if txt.contains("captcha") || txt.contains("CAPTCHA") {
+            return Err("CAPTCHA".into());
+        }
+        let short: String = txt.chars().take(180).collect();
+        return Err(format!("HTTP {}: {}", status, short));
+    }
+
+    // ---------- SSE oxu ----------
+    let reader = BufReader::new(resp);
+    let mut full = String::new();
+    let mut got_done = false;
+    let mut had_error: Option<String> = None;
+    let mut stopped = false;
+
+    for line in reader.lines() {
+        if job.is_stopped() {
+            stopped = true;
+            break;
+        }
+        if job.idle_secs() > 150 {
+            // donmuş axın — kəsinti kimi bərpa olunacaq
+            break;
+        }
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => break, // oxu xətası — aşağıda kəsinti kimi
+        };
+        job.touch();
+        let line = line.trim();
+        if line.is_empty() || !line.starts_with("data:") {
+            continue;
+        }
+        let payload = line[5..].trim();
+        if payload == "[DONE]" {
+            got_done = true;
+            break;
+        }
+        let ev: Value = match serde_json::from_str(payload) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        match parse_stream_event(&ev) {
+            Some(StreamEvent::Delta(d)) => {
+                full.push_str(&d);
+                emit(StreamEvent::Delta(d));
+            }
+            Some(StreamEvent::Phase(p)) => emit(StreamEvent::Phase(p)),
+            Some(StreamEvent::Done) => got_done = true,
+            Some(StreamEvent::Error(e)) => {
+                had_error = Some(e);
+                break;
+            }
+            Some(StreamEvent::CaptchaRequired) => return Err("CAPTCHA".into()),
+            Some(StreamEvent::Unauthorized) => return Err("UNAUTHORIZED".into()),
+            _ => {}
+        }
+        if got_done {
+            break;
+        }
+    }
+
+    // ---------- serverdə saxla ----------
+    if !stopped || !full.is_empty() {
+        let chat_obj = build_chat_update(
+            chat_id, chat_title, model, history, user_msg_id, assistant_msg_id, prompt, &full,
+        );
+        let _ = client.chat_update(token, &chat_obj);
+    }
+
+    if let Some(e) = had_error {
+        return Err(e);
+    }
+    if !stopped && !got_done {
+        // «done» alınmadan bitdi → şəbəkə kəsintisi → retry
+        return Err("RETRY:Stream interrupted (network).".into());
+    }
+    Ok(())
+}
+
+/// Bitdikdən sonra chat-i yeniləmək üçün tam obyekt (veb formatı)
 #[allow(clippy::too_many_arguments)]
 fn build_chat_update(
     chat_id: &str,
     title: &str,
     model: &str,
-    history_ids: &[(String, String, String)],
+    history: &[(String, String)],
     user_msg_id: &str,
     assistant_msg_id: &str,
     prompt: &str,
     full_content: &str,
 ) -> Value {
-    // ardıcıllıq: history_ids..., user(yeni), assistant(yeni)
-    let mut ids: Vec<String> = history_ids.iter().map(|(id, _, _)| id.clone()).collect();
+    let mut ids: Vec<String> = Vec::new();
+    // history üçün id-lər yoxdur — sadə saxlama formatı: synthetic id-lər
+    for i in 0..history.len() {
+        ids.push(format!("msg-{}", i));
+    }
     ids.push(user_msg_id.to_string());
     ids.push(assistant_msg_id.to_string());
 
+    let ts = api::now_ms() / 1000;
     let mut messages = serde_json::Map::new();
-    let ts = now_ms() / 1000;
-    for (i, (id, role, content)) in history_ids.iter().enumerate() {
-        let parent = if i > 0 {
-            Value::String(ids[i - 1].clone())
-        } else {
-            Value::Null
-        };
+    for (i, (role, content)) in history.iter().enumerate() {
+        let id = &ids[i];
+        let parent = if i > 0 { Value::String(ids[i - 1].clone()) } else { Value::Null };
         let children: Vec<String> = ids.get(i + 1).map(|c| vec![c.clone()]).unwrap_or_default();
         messages.insert(
             id.clone(),
-            serde_json::json!({
+            json!({
                 "id": id, "parentId": parent, "childrenIds": children,
                 "role": role, "content": content, "timestamp": ts, "models": [model]
             }),
         );
     }
     let n = ids.len();
-    // user mesajı
     messages.insert(
         user_msg_id.to_string(),
-        serde_json::json!({
+        json!({
             "id": user_msg_id,
             "parentId": if n >= 2 { Value::String(ids[n - 2].clone()) } else { Value::Null },
             "childrenIds": [assistant_msg_id],
             "role": "user", "content": prompt, "timestamp": ts, "models": [model]
         }),
     );
-    // assistant
     messages.insert(
         assistant_msg_id.to_string(),
-        serde_json::json!({
+        json!({
             "id": assistant_msg_id,
             "parentId": user_msg_id,
             "childrenIds": [],
@@ -464,7 +387,7 @@ fn build_chat_update(
         }),
     );
 
-    serde_json::json!({
+    json!({
         "id": chat_id,
         "title": title,
         "models": [model],
@@ -483,7 +406,12 @@ fn build_chat_update(
         "auto_web_search": false,
         "message_version": 1,
         "extra": {},
-        "timestamp": now_ms(),
+        "timestamp": api::now_ms(),
         "type": "general_agent"
     })
+}
+
+/// Markdown bloklarını hazır formatda qaytarır (UI-yə köçürmə üçün)
+pub fn blocks_of(text: &str) -> Vec<markdown::Block> {
+    markdown::parse(text)
 }

@@ -1,43 +1,48 @@
 [package]
 name = "zai-mobile"
-version = "3.0.0"
+version = "4.0.0"
 edition = "2021"
-description = "Z.ai native Android client — 100% Rust, WebView yoxdur"
+description = "Z.ai native Android client — 100% Rust (Slint UI, WebView yoxdur)"
 license = "MIT"
 
 [lib]
-# cdylib Android üçün (NativeActivity), lib desktop üçün
+# cdylib: Android NativeActivity .so; lib: desktop preview run
 crate-type = ["cdylib", "lib"]
 
 [dependencies]
-eframe = { version = "0.37", default-features = false, features = [
-    "default_fonts",
-    "glow",
-    "android-native-activity",
-] }
-egui = { version = "0.37", features = [
-    "monochrome_emoji_fonts",
-] } # emoji/simvol qlifləri (💬 ⚠ ℹ ⟳ …) üçün NotoEmoji zəncirə düşür
-jni = "0.22" # Android sistem buferinə JNI girişi (egui-winit Android-də arboard YOXDUR)
-ndk-context = "0.1" # JavaVM + Activity qlobal referansı (android-activity qeyd edir)
-reqwest = { version = "0.12", default-features = false, features = [
-    "blocking",
-    "json",
-    "rustls-tls",
-    "gzip",
-    "cookies",
-] }
+# ---- Slint: Android-də xüsusi backend (Skia renderer + NativeActivity) ----
+# Hədəfə görə backend seçimi — yalnız BİR backend aktiv olur:
+#   Android: backend-android-activity-06 (native-activity + skia)
+#   Desktop: backend-winit + renderer-femtovg (preview üçün)
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
-winit = "0.30"
-image = { version = "0.25", default-features = false, features = ["png"] } # kart/ikon PNG dekodlaşdırması
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+slint = { version = "=1.18.1", default-features = false, features = ["std", "compat-1-2"] }
 
-# Desktop-da pəncərə backend-ləri + log (Android-da yoxdur)
+[target.'cfg(target_os = "android")'.dependencies]
+slint = { version = "=1.18.1", default-features = false, features = ["std", "compat-1-2", "backend-android-activity-06"] }
+jni = "0.21"
+ndk-context = "0.1"
+
 [target.'cfg(not(target_os = "android"))'.dependencies]
-eframe = { version = "0.37", features = ["x11", "wayland"] }
+slint = { version = "=1.18.1", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-femtovg"] }
 env_logger = "0.11"
+
+[target.'cfg(target_os = "android")'.dependencies.reqwest]
+version = "0.12"
+default-features = false
+features = ["blocking", "json", "rustls-tls", "gzip", "cookies"]
+
+[target.'cfg(not(target_os = "android"))'.dependencies.reqwest]
+version = "0.12"
+default-features = false
+features = ["blocking", "json", "rustls-tls", "gzip", "cookies"]
+
+[build-dependencies]
+slint-build = "=1.18.1"
 
 [package.metadata.android]
 build_targets = ["aarch64-linux-android"]
@@ -50,7 +55,10 @@ target_sdk_version = 35
 label = "Z.ai"
 
 [package.metadata.android.permission]
-permissions = ["android.permission.INTERNET", "android.permission.ACCESS_NETWORK_STATE"]
+permissions = [
+    "android.permission.INTERNET",
+    "android.permission.ACCESS_NETWORK_STATE",
+]
 
 [profile.release]
 opt-level = 2

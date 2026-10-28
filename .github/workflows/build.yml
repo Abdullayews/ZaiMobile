@@ -64,7 +64,7 @@ jobs:
           JAR=$PLATFORM_JAR
           SO=target/aarch64-linux-android/release/libzai_mobile.so
           VC=${{ github.run_number }}
-          VN=3.0.0-beta.$VC
+          VN=4.0.0-beta.$VC
           APK=ZaiMobile-v$VN.apk
           echo "APK_NAME=$APK" >> $GITHUB_ENV
           echo "VERSION_NAME=$VN" >> $GITHUB_ENV
@@ -107,22 +107,28 @@ jobs:
       - name: Beta Release (pre-release)
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v3.0.0-beta.${{ github.run_number }}
-          name: Z.ai Native v3.0.0-beta.${{ github.run_number }} (Beta)
+          tag_name: v4.0.0-beta.${{ github.run_number }}
+          name: Z.ai Native v4.0.0-beta.${{ github.run_number }} (Beta)
           body: |
             ⚡ **Beta buraxılış** — hər push-da GitHub Actions-da avtomatik qurulur və imzalanır.
 
-            **v3.0 — Veb UI-nun piksel-dəqiq native replikası.** WebView yoxdur, hər şey app daxilində.
+            **v4.0 — TAM SIFIRDAN YENİDƏN YAZILIB: Slint UI + Skia render (egui silindi).**
 
-            • Brauzerdəki chat.z.ai görünüşü 1:1: işıq tema (#F0F0F0), "More than coding..." Crimson Text başlıq, 5 təklif kartı (veb CDN şəkilləri), "Send a Message" kapsulu
-            • Veb-dən çıxarılmış gerçek SVG ikonlar (rasterləşdirilmiş, tint sistemi)
-            • Veb strukturunda tək ekran: nav + məzmun + giriş; tarixçə drawer, sign-in modal, model popup, API menyu — hamısı overlay
-            • Sign-in modal: Continue with Google / Email / Github / Skip (veb dizaynı) + işləyən token daxilolma
-            • Model popup: model siyahısı + Effort slider + "Try advanced features" (veb mətnləri)
-            • Mesajlar: istifadəçi balonları #EAEAEA r12, cavablar markdown + Copy, xətada "No response" + Regenerate (veb davranışı)
-            • 100% Rust (egui + GPU render) — brauzer yoxdur, ~5MB
-            • chat.z.ai veb protokolu: signature + SSE streaming, qonaq avtomatik + token
-            • Token yapışdırma / kopyalama (JNI), Android back, pulldown-refresh, avtomatik bərpa (retry + 180s watchdog + sessiya yeniləmə)
+            • Yeni UI mühərriki: Slint 1.18 (backend-android-activity) — Android-də NativeActivity + Skia,
+              klaviatura (IME), clipboard və toxunma Slint-in rəsmi Android dəstəyi ilə
+            • Veb UI-nun dəqiq replikası: welcome "More than coding...", 2 sütunlu 5 təklif kartı,
+              model popup (Effort səviyyələri model metadata-sından), tarixçə drawer, sign-in modal
+            • Veb protokolu tam: guest token, /api/models (min_available_level filtri), chats/new,
+              v2 completions SSE (imza HMAC-SHA256), chat yeniləmə, silmə, tarixçədən açma
+            • WAF (Alibaba CDN 405) bloklarına qarşı avtomatik retry — veb app-də belə yoxdur!
+            • FRONTEND_CAPTCHA_REQUIRED aşkarlanması + aydın istifadəçi yönləndirməsi
+              (hesabla daxil ol / token yapışdır — brauzerdə captcha həll olunur)
+            • 3 giriş yolu: Email+şifrə, Account token (localStorage-dan), Qonaq
+            • Markdown render: başlıq, siyahı, sitat, kod blokları (dil + copy düyməsi)
+            • Mesaj əməliyyatları: copy, regenerate, stop, avtomatik aşağı sürüşmə, "aşağı" düyməsi
+            • Sessiya saxlanması (state.json), 401-də avtomatik qonaq bərpası, 150s axın watchdog
+            • Şriftlər binariyə gömülüb (Carlito/Crimson/DejaVu Mono) — mətn həmişə render olunur
+            • 100% Rust — WebView yoxdur
 
             **Quraşdırma:** APK-nı endirin → telefonda açın → "Naməlum mənbələrdən quraşdırmaya" icazə verin.
             Köhnə versiya üzərinə quraşdırıla bilər (eyni imza açarı).

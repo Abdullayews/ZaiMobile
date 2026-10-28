@@ -2,3 +2,4 @@
 /build
 *.apk.tmp
 Cargo.lock.bak
+data/

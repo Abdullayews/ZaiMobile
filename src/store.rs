@@ -1,70 +1,62 @@
+//! Yaddaşda saxlanılan vəziyyət (state.json) + data qovluğu yolları.
+
+use crate::api;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-#[derive(Serialize, Deserialize, Clone)]
-pub struct PersistedState {
-    pub token: Option<String>,
-    pub model: Option<String>,
-    pub session_id: Option<String>,
-    pub theme_dark: Option<bool>,
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct Persisted {
+    pub token: String,
+    pub user_id: String,
+    pub user_name: String,
+    pub is_guest: bool,
+    pub device_id: String,
+    pub model_index: usize,
+    pub effort_index: usize,
 }
 
-impl Default for PersistedState {
-    fn default() -> Self {
-        PersistedState {
-            token: None,
-            model: Some("x-preview-l".into()),
-            session_id: None,
-            theme_dark: Some(true),
+impl Persisted {
+    pub fn new() -> Self {
+        Persisted {
+            device_id: api::make_device_id(),
+            model_index: 0,
+            effort_index: 2,
+            ..Default::default()
         }
     }
 }
 
-#[cfg(target_os = "android")]
-static DATA_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-
-#[cfg(target_os = "android")]
-pub fn set_android_data_dir(p: PathBuf) {
-    let _ = DATA_DIR.set(p);
-}
-
+/// App data qovluğu:
+/// - Android: /data/data/zai.mobile/files (NativeActivity paketi)
+/// - Desktop: ./data
 pub fn data_dir() -> PathBuf {
     #[cfg(target_os = "android")]
     {
-        if let Some(p) = DATA_DIR.get() {
-            return p.clone();
-        }
-        return PathBuf::from("/data/data/zai.mobile/files");
+        let p = PathBuf::from("/data/data/zai.mobile/files");
+        let _ = std::fs::create_dir_all(&p);
+        p
     }
     #[cfg(not(target_os = "android"))]
     {
-        if let Some(home) = std::env::var_os("HOME") {
-            let p = PathBuf::from(home).join(".zai-mobile");
-            let _ = std::fs::create_dir_all(&p);
-            return p;
-        }
-        std::env::temp_dir().join("zai-mobile")
+        let p = PathBuf::from("data");
+        let _ = std::fs::create_dir_all(&p);
+        p
     }
 }
 
-fn state_path() -> PathBuf {
+pub fn state_path() -> PathBuf {
     data_dir().join("state.json")
 }
 
-pub fn load() -> PersistedState {
+pub fn load() -> Persisted {
     match std::fs::read_to_string(state_path()) {
-        Ok(txt) => serde_json::from_str(&txt).unwrap_or_default(),
-        Err(_) => PersistedState::default(),
+        Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
+        Err(_) => Persisted::new(),
     }
 }
 
-pub fn save(st: &PersistedState) {
-    let dir = data_dir();
-    let _ = std::fs::create_dir_all(&dir);
-    if let Ok(json) = serde_json::to_string_pretty(st) {
-        let tmp = dir.join("state.json.tmp");
-        if std::fs::write(&tmp, json).is_ok() {
-            let _ = std::fs::rename(&tmp, state_path());
-        }
+pub fn save(p: &Persisted) {
+    if let Ok(s) = serde_json::to_string_pretty(p) {
+        let _ = std::fs::write(state_path(), s);
     }
 }

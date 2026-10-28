@@ -1,51 +1,24 @@
-//! Z.ai native Android klienti — 100% Rust (WebView yoxdur)
+//! Z.ai — chat.z.ai-nin 100% native Android klienti (Rust + Slint).
+//! WebView yoxdur; UI Slint ilə, şəbəkə reqwest ilə, imza HMAC-SHA256 ilə.
 
-pub mod api;
-pub mod icons;
-pub mod md;
-pub mod platform;
-pub mod screens;
-pub mod store;
-pub mod stream;
-pub mod theme;
-pub mod ui;
+slint::include_modules!();
 
-#[cfg(target_os = "android")]
-#[no_mangle]
-fn android_main(app: winit::platform::android::activity::AndroidApp) {
-    if let Some(p) = app.internal_data_path() {
-        store::set_android_data_dir(p);
-    }
-    let options = eframe::NativeOptions {
-        android_app: Some(app),
-        ..Default::default()
-    };
-    eframe::run_native(
-        "Z.ai",
-        options,
-        Box::new(|cc| {
-            let mut app = ui::MyApp::new(cc);
-            app.auto_connect(); // veb kimi: açılışda avtomatik qonaq/token sessiyası
-            Ok(Box::new(app))
-        }),
-    )
-    .expect("eframe run failed");
+mod api;
+mod clipboard;
+mod controller;
+mod markdown;
+mod store;
+mod stream;
+
+/// Giriş nöqtəsi: Android (cdylib → android_main) və Desktop (main.rs bin)
+pub fn run_app() {
+    controller::run();
 }
 
-#[cfg(not(target_os = "android"))]
-#[allow(dead_code)]
-fn main() -> eframe::Result {
-    env_logger::init(); // desktop-da log
-    let options = eframe::NativeOptions {
-        ..Default::default()
-    };
-    eframe::run_native(
-        "Z.ai",
-        options,
-        Box::new(|cc| {
-            let mut app = ui::MyApp::new(cc);
-            app.auto_connect();
-            Ok(Box::new(app))
-        }),
-    )
+/// Android: Slint backend-android-activity (NativeActivity + Skia)
+#[cfg(target_os = "android")]
+#[no_mangle]
+fn android_main(app: slint::android::AndroidApp) {
+    slint::android::init(app).expect("Slint Android backend init");
+    run_app();
 }
