@@ -58,6 +58,11 @@ jobs:
           BT=$BUILD_TOOLS
           JAR=$PLATFORM_JAR
           SO=target/aarch64-linux-android/release/libzai_mobile.so
+          VC=${{ github.run_number }}
+          VN=2.0.0-beta.$VC
+          APK=ZaiMobile-$VN.apk
+          echo "APK_NAME=$APK" >> $GITHUB_ENV
+          echo "VERSION_NAME=$VN" >> $GITHUB_ENV
 
           rm -rf build && mkdir -p build/lib/arm64-v8a
           cp $SO build/lib/arm64-v8a/
@@ -68,7 +73,7 @@ jobs:
             --manifest AndroidManifest.xml \
             -I $JAR \
             --min-sdk-version 24 --target-sdk-version 35 \
-            --version-code 3 --version-name 2.0 \
+            --version-code $VC --version-name $VN \
             build/res.zip
 
           # .so faylını düzgün qovluq yolu ilə əlavə et
@@ -84,30 +89,39 @@ jobs:
             --ks-key-alias zai \
             --ks-pass pass:${{ secrets.KEYSTORE_PASSWORD }} \
             --key-pass pass:${{ secrets.KEY_PASSWORD }} \
-            --out ZaiMobile-v2.0.apk build/app-aligned.apk
-          $BT/apksigner verify --print-certs ZaiMobile-v2.0.apk | head -4
-          ls -la ZaiMobile-v2.0.apk
+            --out $APK build/app-aligned.apk
+          $BT/apksigner verify --print-certs $APK | head -4
+          ls -la $APK
 
       - name: Artifakt
         uses: actions/upload-artifact@v4
         with:
-          name: ZaiMobile-v2.0
-          path: ZaiMobile-v2.0.apk
+          name: ZaiMobile-${{ env.VERSION_NAME }}
+          path: ${{ env.APK_NAME }}
 
-      - name: Release
+      - name: Beta Release (pre-release)
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v2.0
-          name: Z.ai Native v2.0 — 100% Rust
+          tag_name: v2.0.0-beta.${{ github.run_number }}
+          name: Z.ai Native v2.0.0-beta.${{ github.run_number }} (Beta)
           body: |
+            ⚡ **Beta buraxılış** — hər push-da GitHub Actions-da avtomatik qurulur və imzalanır.
+
             Tam native Rust versiyası — WebView tamamilə silindi.
 
-            • 100% Rust (egui + GPU render) — brauzer yoxdur, ~10MB
+            • 100% Rust (egui + GPU render) — brauzer yoxdur, ~4MB
             • chat.z.ai veb protokolu: signature + SSE streaming
             • Qonaq rejimi avtomatik + hesab tokeni ilə daxilolma
             • Söhbət tarixçəsi, markdown, kod blokları, kopyalama
             • Düşünmə / axtarış fazaları canlı göstərilir
             • Model seçimi (GLM-5.3 / Flash / 5.2)
-          files: ZaiMobile-v2.0.apk
+
+            **Quraşdırma:** APK-nı endirin → telefonda açın → "Naməlum mənbələrdən quraşdırmaya" icazə verin.
+            Köhnə versiya üzərinə quraşdırıla bilər (eyni imza açarı).
+
+            > Beta statusu: stabil buraxılış üçün əsas axın hələ "Latest" kimi işarələnmir.
+          files: ${{ env.APK_NAME }}
+          prerelease: true
+          make_latest: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
