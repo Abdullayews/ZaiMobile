@@ -2,7 +2,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 // ---------- Sabitlər ----------
 pub const BASE: &str = "https://chat.z.ai";
-pub const FE_VERSION: &str = "prod-fe-1.1.121";
+pub const FE_VERSION: &str = "prod-fe-1.1.122";
 pub const MOBILE_UA: &str = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36";
 
 const SIGNATURE_KEY: &str = "key-@@@@)))()((9))-xxxx&&&%%%%%";
@@ -229,7 +229,12 @@ impl Client {
         let http = reqwest::blocking::Client::builder()
             .user_agent(MOBILE_UA)
             .cookie_store(true)
-            .timeout(std::time::Duration::from_secs(30))
+            // ÜMUMİ timeout-u SÖNDÜR: reqwest blocking-də `timeout` bütün sorğunun
+            // (SSE axını oxuma daxil) müddətidir — 30s uzun cavabları ortadan kəsirdi.
+            // SSE axını dəqiqələr çəkə bilər. Yalnız qoşulma fazası limitlidir;
+            // donmuş axını isə UI tərəfində watchdog (60s) bərpa edir.
+            .timeout(None)
+            .connect_timeout(std::time::Duration::from_secs(30))
             .build()
             .map_err(|e| e.to_string())?;
         Ok(Client {

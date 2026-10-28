@@ -67,6 +67,17 @@ pub struct MyApp {
     pub error: Option<String>,
     pub info: Option<String>,
     pub session_id: String,
+
+    // Pulldown-refresh (aşağı çəkib buraxaraq yenilə)
+    pub pull_dist: f32,
+    pub pull_armed: bool,
+
+    // Avtomatik bərpa: kəsilmədə retry, donma nəzarəti, 401-də sessiya yeniləmə
+    pub retry_count: u32,
+    pub last_prompt: Option<String>,
+    pub pending_retry: Option<String>,
+    pub last_activity: Option<std::time::Instant>,
+    pub egui_ctx: egui::Context,
 }
 
 impl MyApp {
@@ -189,6 +200,13 @@ impl MyApp {
                 .session_id
                 .clone()
                 .unwrap_or_else(|| format!("web-{}", crate::api::gen_uuid())),
+            pull_dist: 0.0,
+            pull_armed: false,
+            retry_count: 0,
+            last_prompt: None,
+            pending_retry: None,
+            last_activity: None,
+            egui_ctx: cc.egui_ctx.clone(),
         }
     }
 
@@ -354,20 +372,35 @@ impl MyApp {
         });
     }
 
-    pub fn send_message(&mut self, ctx: egui::Context) {
+    pub fn send_message(&mut self, _ctx: egui::Context) {
         let prompt = self.input.trim().to_string();
         if prompt.is_empty() || self.streaming {
             return;
         }
         self.input.clear();
-        self.error = None;
+        self.dispatch(prompt, false);
+    }
 
-        // Kanal (lazımsa yenidən)
-        if self.tx_stream.is_none() {
-            let (tx, rx) = std::sync::mpsc::channel();
-            self.tx_stream = Some(tx);
-            self.rx_stream = Some(rx);
+    /// Mesajı göndər. `is_retry` — avtomatik bərpa zamanı təkrar göndəriş
+    /// (retry sayğacı sıfırlanmır; köhnə user+assistant cütü artıq çıxarılıb olmalıdır).
+    pub fn dispatch(&mut self, prompt: String, is_retry: bool) {
+        if prompt.is_empty() || self.streaming {
+            return;
         }
+        self.error = None;
+        if !is_retry {
+            self.retry_count = 0;
+            self.info = None;
+        }
+        self.last_prompt = Some(prompt.clone());
+        self.last_activity = Some(std::time::Instant::now());
+
+        // Hər göndərişdə YENİ kanal — köhnə (kəsilmiş/donmuş) axının hadisələri
+        // yeni cəhdlə qarışmır: köhnə rx düşür, köhnə thread-in göndərişləri
+        // sükutla nəzərə alınmır.
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.tx_stream = Some(tx);
+        self.rx_stream = Some(rx);
 
         // İstifadəçi mesajı + boş köməkçi
         let user_id = crate::api::gen_uuid();
@@ -412,7 +445,7 @@ impl MyApp {
             is_first,
             self.model(),
             self.session_id.clone(),
-            ctx,
+            self.egui_ctx.clone(),
             self.tx_stream.as_ref().unwrap().clone(),
         );
         self.stop_flag = Some(job.stop);
@@ -433,11 +466,22 @@ impl MyApp {
     // ---------- Axın hadisələrini emal et ----------
 
     pub fn drain_stream(&mut self) {
-        let rx = match &self.rx_stream {
-            Some(r) => r,
-            None => return,
+        // Əvvəlcə hadisələri topla (rx immutable borroudur), sonra emal et —
+        // emal zamanı dispatch/retry self-i mutasiya edir.
+        let events: Vec<StreamEvent> = {
+            let rx = match &self.rx_stream {
+                Some(r) => r,
+                None => return,
+            };
+            let mut events = Vec::new();
+            while let Ok(ev) = rx.try_recv() {
+                events.push(ev);
+            }
+            events
         };
-        while let Ok(ev) = rx.try_recv() {
+        for ev in events {
+            // axın aktivdir — donma sayğacını sıfırla
+            self.last_activity = Some(std::time::Instant::now());
             match ev {
                 StreamEvent::ChatCreated(id) => {
                     self.chat_id = Some(id);
@@ -468,6 +512,10 @@ impl MyApp {
                 }
                 StreamEvent::Done => {
                     self.streaming = false;
+                    self.last_activity = None;
+                    self.last_prompt = None;
+                    self.retry_count = 0;
+                    self.info = None;
                     if let Some(last) = self.messages.last_mut() {
                         if last.role == "assistant" {
                             last.phase = None;
@@ -479,15 +527,147 @@ impl MyApp {
                 }
                 StreamEvent::Error(e) => {
                     self.streaming = false;
-                    self.error = Some(e);
-                    if let Some(last) = self.messages.last_mut() {
-                        if last.role == "assistant" && last.content.trim().is_empty() {
-                            last.content = String::new();
-                        }
-                    }
+                    self.last_activity = None;
+                    self.handle_stream_error(e);
                 }
             }
         }
+    }
+
+    // ---------- Avtomatik bərpa ----------
+
+    /// Axın xətasını emal et: 401 → sessiya yenilə; kəsilmə → təkrar cəhd;
+    /// digər hallarda istifadəçiyə xəta göstər.
+    fn handle_stream_error(&mut self, e: String) {
+        let low = e.to_lowercase();
+        // 401 — token vaxtı bitib
+        if low.contains("401") || low.contains("unauthorized") {
+            self.remove_last_pair();
+            if self.client.as_ref().map(|c| c.is_guest).unwrap_or(false) {
+                // qonaq: avtomatik yeni qonaq sessiyası al və mesajı təkrar göndər
+                self.pending_retry = self.last_prompt.take();
+                self.info = Some("Qonaq sessiyası vaxtı bitdi — yenilənir…".into());
+                self.reauth_guest();
+            } else {
+                // hesab tokeni bitib — daxilolma ekranına qaytar
+                self.persist.token = None;
+                crate::store::save(&self.persist);
+                self.client = None;
+                self.screen = Screen::Welcome;
+                self.error =
+                    Some("Sessiya vaxtı bitdi — tokeni yenidən daxil edin.".into());
+            }
+            return;
+        }
+        // kəsilmə/donma — avtomatik təkrar cəhd (maks. 2)
+        if Self::is_retryable(&e) && self.retry_count < 2 {
+            self.retry_count += 1;
+            if let Some(p) = self.last_prompt.take() {
+                self.remove_last_pair();
+                self.info = Some(format!(
+                    "Bağlantı kəsildi — avtomatik yenidən cəhd ({}/2)…",
+                    self.retry_count
+                ));
+                self.dispatch(p, true);
+                return;
+            }
+        }
+        self.last_prompt = None;
+        self.retry_count = 0;
+        self.error = Some(e);
+    }
+
+    /// Şəbəkə xətaları (kəsilmə, timeout, 5xx, donma) təkrar cəhdə layiqdirmi?
+    fn is_retryable(e: &str) -> bool {
+        let e = e.to_lowercase();
+        if e.contains("captcha")
+            || e.contains("limit")
+            || e.contains("versiya")
+            || e.contains("401")
+            || e.contains("426")
+            || e.contains("token")
+        {
+            return false;
+        }
+        e.contains("şəbəkə")
+            || e.contains("bağlantı")
+            || e.contains("kəsildi")
+            || e.contains("dondu")
+            || e.contains("timeout")
+            || e.contains("http 5")
+            || e.contains("connection")
+            || e.contains("reset")
+            || e.contains("eof")
+    }
+
+    /// Son göndərilən user+assistant cütünü ekrandan çıxar (retry üçün)
+    fn remove_last_pair(&mut self) {
+        if self
+            .messages
+            .last()
+            .map(|m| m.role == "assistant")
+            .unwrap_or(false)
+        {
+            self.messages.pop();
+        }
+        if self
+            .messages
+            .last()
+            .map(|m| m.role == "user")
+            .unwrap_or(false)
+        {
+            self.messages.pop();
+        }
+    }
+
+    /// Arxa fonda yeni qonaq sessiyası al (ekran dəyişmır)
+    fn reauth_guest(&mut self) {
+        let tx = self.tx_bg.clone();
+        std::thread::spawn(move || {
+            let mut c = match Client::new() {
+                Ok(c) => c,
+                Err(e) => {
+                    let _ = tx.send(BgEvent::Err(e));
+                    return;
+                }
+            };
+            if let Err(e) = c.guest_auth() {
+                let _ = tx.send(BgEvent::Err(e));
+                return;
+            }
+            let _ = tx.send(BgEvent::Ready(Box::new(c)));
+        });
+    }
+
+    /// Axın donmasına nəzarət — 60 saniyə heç bir hadisə gəlməsə kəsib yenidən cəhd et
+    pub fn stream_watchdog(&mut self) {
+        if self.streaming {
+            if let Some(t) = self.last_activity {
+                if t.elapsed() > std::time::Duration::from_secs(60) {
+                    self.stop_generation();
+                    self.handle_stream_error("Axın dondu — avtomatik bərpa".into());
+                }
+            }
+        }
+    }
+
+    // ---------- Pulldown-refresh ----------
+
+    /// Scroll yuxarıda ikən barmağın aşağı çəkilməsini izləyir.
+    /// Buraxılışda hədd keçilibsə `true` qaytarır (yeniləməni tetiklə).
+    pub fn pull_refresh_step(&mut self, ui: &egui::Ui, at_top: bool) -> bool {
+        let (dragging, dy) =
+            ui.input(|i| (i.pointer.is_decidedly_dragging(), i.pointer.delta().y));
+        if dragging && at_top && dy > 0.0 {
+            self.pull_dist = (self.pull_dist + dy).min(140.0);
+        } else if !dragging {
+            let fire = self.pull_armed;
+            self.pull_dist = 0.0;
+            self.pull_armed = false;
+            return fire;
+        }
+        self.pull_armed = self.pull_dist >= 80.0;
+        false
     }
 
     pub fn drain_bg(&mut self) {
@@ -497,6 +677,11 @@ impl MyApp {
                     // brauzer warm-up-u fon rejimində
                     c.warm_up();
                     self.client = Some(*c);
+                    // 401-dən sonra gözləyən mesaj varsa avtomatik göndər
+                    if let Some(p) = self.pending_retry.take() {
+                        self.info = Some("Sessiya yeniləndi — mesaj yenidən göndərilir…".into());
+                        self.dispatch(p, true);
+                    }
                 }
                 BgEvent::Models(models) => {
                     if !models.is_empty() {

@@ -206,6 +206,9 @@ fn run_completion(
     let mut full_content = String::new();
     let mut had_error: Option<String> = None;
     let mut stopped = false;
+    // Axın «done» hadisəsi almadan bitibsə bu şəbəkə kəsintisidir —
+    // qeyd et ki, yuxarıda avtomatik bərpa (retry) işə düşə bilsin.
+    let mut got_done = false;
     for line in reader.lines() {
         if stop.load(Ordering::Relaxed) {
             stopped = true;
@@ -213,7 +216,7 @@ fn run_completion(
         }
         let line = match line {
             Ok(l) => l,
-            Err(_) => break,
+            Err(_) => break, // oxu xətası — aşağıda kəsinti kimi qiymətləndirilir
         };
         let line = line.trim().to_string();
         if line.is_empty() || !line.starts_with("data:") {
@@ -221,6 +224,7 @@ fn run_completion(
         }
         let payload = line[5..].trim();
         if payload == "[DONE]" {
+            got_done = true;
             break;
         }
         let ev: Value = match serde_json::from_str(payload) {
@@ -233,6 +237,9 @@ fn run_completion(
                 send(StreamEvent::Delta(d));
             }
             Some(StreamEvent::Phase(p)) => send(StreamEvent::Phase(p)),
+            Some(StreamEvent::Done) => {
+                got_done = true;
+            }
             Some(StreamEvent::Error(e)) => {
                 had_error = Some(e);
                 break;
@@ -266,6 +273,10 @@ fn run_completion(
 
     if let Some(e) = had_error {
         return Err(e);
+    }
+    // İstifadəçi dayandırmayıbsa və axın «done» almadan bitibsə — kəsinti
+    if !stopped && !got_done {
+        return Err("Axın kəsildi (şəbəkə)".into());
     }
     Ok(())
 }

@@ -8,6 +8,13 @@ impl eframe::App for MyApp {
         self.drain_bg();
         self.drain_stream();
 
+        // Axın aktiv ikən davamlı repaint — donma watchdog-unun işləməsi üçün
+        if self.streaming {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(500));
+            self.stream_watchdog();
+        }
+
         match self.screen {
             Screen::Welcome => self.welcome_ui(ui),
             Screen::Chats => self.chats_ui(ui),
@@ -167,7 +174,9 @@ impl MyApp {
                     });
                     return;
                 }
-                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                // Pulldown göstəricisi (çəkmə gedişatı / yenilənir)
+                pull_indicator(ui, self.pull_dist, self.pull_armed, self.list_loading);
+                let out = egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     let ids: Vec<String> = self.chat_list.iter().map(|c| c.id.clone()).collect();
                     for id in ids {
                         let c = self.chat_list.iter().find(|c| c.id == id).unwrap().clone();
@@ -212,11 +221,20 @@ impl MyApp {
                         }
                     }
                 });
+                // — Pulldown-refresh: scroll yuxarıda ikən aşağı çək → burax → yenilə —
+                let at_top = out.state.clamped_offset().y <= 0.5;
+                if self.pull_refresh_step(ui, at_top) {
+                    self.refresh_chats();
+                }
             });
 
         if let Some(e) = self.error.clone() {
             egui::Panel::bottom("err").frame(top_panel_frame()).show(ui, |ui| {
                 error_banner(ui, &e);
+            });
+        } else if let Some(i) = self.info.clone() {
+            egui::Panel::bottom("inf").frame(top_panel_frame()).show(ui, |ui| {
+                info_banner(ui, &i);
             });
         }
     }
@@ -273,6 +291,8 @@ impl MyApp {
                 ui.horizontal_centered(|ui| {
                     if let Some(e) = &self.error {
                         error_banner(ui, e);
+                    } else if let Some(i) = &self.info {
+                        info_banner(ui, i);
                     }
                 });
                 ui.add_space(4.0);
@@ -344,7 +364,14 @@ impl MyApp {
                     });
                     return;
                 }
-                egui::ScrollArea::vertical()
+                // Pulldown göstəricisi (çəkmə gedişatı / yenilənir)
+                pull_indicator(
+                    ui,
+                    self.pull_dist,
+                    self.pull_armed,
+                    self.list_loading && !self.streaming,
+                );
+                let out = egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .stick_to_bottom(true)
                     .show(ui, |ui| {
@@ -356,6 +383,13 @@ impl MyApp {
                         }
                         ui.add_space(6.0);
                     });
+                // — Pulldown-refresh: söhbəti serverdən yenidən yüklə —
+                let at_top = out.state.clamped_offset().y <= 0.5;
+                if self.pull_refresh_step(ui, at_top) && !self.streaming {
+                    if let Some(id) = self.chat_id.clone() {
+                        self.open_chat(id);
+                    }
+                }
             });
     }
 
@@ -459,6 +493,47 @@ fn icon_button(ui: &mut egui::Ui, icon: &str, tooltip: &str) -> egui::Response {
             .fill(Color32::TRANSPARENT),
     );
     r.on_hover_text(tooltip)
+}
+
+/// Pulldown-refresh göstəricisi: çəkmə gedişatı və ya "Yenilənir…" fırlananıcı
+fn pull_indicator(ui: &mut egui::Ui, dist: f32, armed: bool, loading: bool) {
+    if loading {
+        ui.vertical_centered(|ui| {
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.add(egui::Spinner::new().size(14.0));
+                ui.label(RichText::new("Yenilənir…").size(13.0).color(DIM));
+            });
+            ui.add_space(2.0);
+        });
+    } else if dist > 0.0 {
+        ui.vertical_centered(|ui| {
+            ui.add_space(4.0);
+            let pct = (((dist / 80.0) * 100.0) as i32).clamp(0, 100);
+            let txt = if armed {
+                format!("↻ {}% — yeniləmək üçün buraxın", pct)
+            } else {
+                format!("↓ yeniləmək üçün çəkin · {}%", pct)
+            };
+            ui.label(RichText::new(txt).size(13.0).color(DIM));
+            ui.add_space(2.0);
+        });
+    }
+}
+
+fn info_banner(ui: &mut egui::Ui, msg: &str) {
+    egui::Frame::new()
+        .fill(Color32::from_rgb(20, 35, 55))
+        .corner_radius(8.0)
+        .inner_margin(egui::Margin::same(10))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(
+                RichText::new(format!("ℹ {}", msg))
+                    .size(13.5)
+                    .color(Color32::from_rgb(150, 200, 255)),
+            );
+        });
 }
 
 fn error_banner(ui: &mut egui::Ui, msg: &str) {

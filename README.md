@@ -44,6 +44,12 @@ chat.z.ai veb API-si üzərindən gedir.
 GitHub Actions avtomatik APK yığır (`.github/workflows/build.yml`):
 Rust (aarch64-linux-android) → aapt2 → zipalign → apksigner (imzalı).
 
+**Hər push → yeni beta release:** `main`-ə hər push-da CI APK qurur, imzalayır və
+`v2.0.0-beta.N` teqi ilə **pre-release (Beta)** kimi dərc edir. Stabil "Latest"
+buraxılışı yalnız beta mərhələsi bitəndə olacaq.
+
+Endirmək üçün: **Releases** sekmesində ən son beta → `ZaiMobile-v2.0.0-beta.N.apk`.
+
 Lokal desktop testi:
 
 ```bash
