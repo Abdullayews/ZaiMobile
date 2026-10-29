@@ -1,26 +1,47 @@
-# ZaiMobile v4.0 — İş jurnalı (2026-10-28/29)
+# ZaiMobile v5.0 — İş jurnalı
 
-## Kök səbəb analizi (nə üçün köhnə app işləmirdi)
-1. **egui/eframe Android dəstəyi etibarsızdır** — IME (klaviatura) və GPU init cihazdan-cihaza qırılır
-2. **chat.z.ai serveri FRONTEND_CAPTCHA_REQUIRED tələb etməyə başlayıb** — köhnə app bunu işləmirdi
-3. **Alibaba CDN WAF 405 blokları** — veb app-də belə yoxdur, köhnə app-də retry yox idi
+## 2026-10-29 — v5.0 "Eyni sistem" (The Same System)
 
-## v4.0 həlli
-- **UI**: egui → **Slint 1.18** (backend-android-activity-06 = NativeActivity + Skia renderer).
-  Səbəb: Slint-in rəsmi, kommersiya dəstəkli Android backend-i (IME, clipboard, vs. javahelper-də).
-- **Şriftlər** `.slint` faylında `import "…ttf"` ilə binariyə gömülür (sistem şrift riski sıfır).
-- **Captcha araşdırması** (tam): AliyunCaptcha v3 protokolu deşifrə edildi
-  (InitCaptchaV3/VerifyCaptchaV3, SceneId=didk33e0, puzzle template-matching + kvadratik
-  slider xəritələməsi piece(d)=0.00355d²+0.0769d) — amma `data` sahəsi şifrələnir və
-  deviceToken FeiLin brauzer barmaq izindən gəlir → native həll mümkün deyil.
-  HƏLL: captcha yalnız riskli IP-lərdə tələb olunur → app 3 giriş yolu verir
-  (email+şifrə / token yapışdır / qonaq) + captcha xətasında aydın yönləndirmə.
-- **WAF retry**: bütün endpoint-lərdə 405/403 HTML → 12 cəhd, 2.5s→9s backoff (veb app-də yoxdur!).
-- **Canlı testlər** (desktop preview + Xvfb + VLM):
-  - UI render: nav/welcome/kart şəbəkəsi/composer — veb dizaynı ilə uyğun ✓
-  - Tam axın: qonaq token → modellər → chats/new (retry keçdi!) → SSE → captcha aşkarlandı ✓
-  - Xəta UI: banner + qırmızı mətn düzgün render olunur ✓
+### Kök səbəb: 4 cəhd, 1 dərs
+| Versiya | UI texnologiyası | Nəticə |
+|---|---|---|
+| v2.x | egui | "işləmir" — IME/şəbəkə/render qeyri-stabil |
+| v3.0 | egui + piksel replika | "heç yaxın deyil" |
+| v4.0 | Slint 1.18 + Skia | "olmur, heç yaxın belə ola bilmir" |
 
-## Build/CI
-- CI sübut olunub: aarch64-linux-android + aapt2 + apksigner + beta release
-- v4.0.0-beta.N, prerelease, make_latest: false
+**Dərs:** Native UI toolkit-i (egui/Slint) hazır veb app-in (Next.js/Tailwind)
+görünüşünü heç vaxt piksel-dəqiq təkrarlaya bilmir. İstifadəçinin tələbi:
+"saytdakı halı kimi — eyni sistem, eyni məntiq, loqodan ən kiçik elementə qədər."
+
+### v5.0 həlli — "eyni sistem" hərfən
+App daxilində chat.z.ai-in ÖZ mühərriki işləyir (system WebView = Chrome mühərriki =
+istifadəçinin mobil brauzerində gördüyünün eynisi). UI, məntiq, API protokolu,
+WAF/captcha, SSE, fayl yükləmə — hamısı saytın ÖZ kodu. Yenidən yazmaq yoxdur →
+davam gətirmək mümkün deyil.
+
+Quruluş:
+- `src-tauri/` — Rust örtüyü (tauri 2.12 + wry 0.53): pəncərə + hər səhifəyə
+  yeridilən bridge JS.
+- `ui/index.html` — brendli bağlanır səhifəsi (Z.ai loqosu, probe, redirect).
+- `src-tauri/src/bridge_js.rs` — pull-to-refresh (Chrome həddə eyni), offline
+  heartbeat + brendli overlay, a[download]/blob endirmə kəsici (fetch→base64→
+  MediaStore), target=_blank/mailto/tel → sistem brauzeri, window.open kəsici.
+- `gen/android .../MainActivity.kt` — __zaiNative JavascriptInterface
+  (openExternal, saveDownload→MediaStore, toast), Back düyməsi
+  (webview.goBack | moveTaskToBack), adjustResize (klaviatura).
+- CI: `cargo tauri android build --apk --target aarch64` → zipalign →
+  imza (köhnə keystore secrets — imza dəyişmir, upgrade yolu qalır) → beta prerelease.
+
+### Canlı yoxlamalar (headless Chromium + real chat.z.ai)
+- Connector: probe → `location.replace('https://chat.z.ai/')` ✓
+- Bridge real saytda: _blank→external ✓, mailto→external ✓,
+  a[download] → fetch→base64(21KB real payload)→saveDownload ✓,
+  detached a.click() ✓, window.open ✓, offline event→brendli overlay ✓,
+  pull-to-refresh scaleX(1) (hasTouch) ✓, toast "Saved: probe.html" ✓
+- APK lokal build: uğurlu (6.6MB, universal/aarch64, imzalı sınaq) ✓
+
+### Yadda saxla
+- `prod-fe-1.1.123` (saytın hazırkı frontend versiyası) — artıq əhəmiyyət daşımır:
+  sayt özünü yeniləyir, app avtomatik sinxron qalır.
+- Rəsmi assetlər: `chat.z.ai/static/logo.svg` (CDN) — offline overlay + connector
+  + app ikonu üçün istifadə olundu.

@@ -1,0 +1,7 @@
+{
+  "$schema": "gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Z.ai main window capability (local pages only; remote uses remote-domain access config)",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

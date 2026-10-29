@@ -1,5 +1,26 @@
-/target
-/build
-*.apk.tmp
-Cargo.lock.bak
-data/
+# Rust / Tauri
+/src-tauri/target/
+/src-tauri/Cargo.lock.bak
+
+# Gradle / Android — build zamanı yarananlar (gradle layihənin özü commit olunur!)
+/src-tauri/gen/android/.gradle/
+/src-tauri/gen/android/build/
+/src-tauri/gen/android/app/build/
+/src-tauri/gen/android/buildSrc/build/
+/src-tauri/gen/android/.idea/
+/src-tauri/gen/android/local.properties
+/src-tauri/gen/android/.tauri/
+
+# imzalama açarları heç vaxt commit olunmur
+*.jks
+*.keystore
+
+# jniLibs — build zamanı symlink qurulur
+/src-tauri/gen/android/app/src/main/jniLibs/
+
+# Tauri kodgen sxemaları
+/src-tauri/gen/schemas/
+
+# System
+.DS_Store
+Thumbs.db
