@@ -11,13 +11,23 @@ export struct MessageBlock {
     lang: string,    // kod blokunun dili
 }
 
+export struct Attachment {
+    id: string,       // server fayl id (upload sonrası)
+    name: string,     // göstərilən ad
+    media: string,    // "image" | "video" | "doc"
+    status: int,      // 0=yüklənir 1=hazır 2=xəta
+    size: string,     // "1.2 MB"
+}
+
 export struct ChatMessage {
     id: string,
     role: string,    // "user" | "assistant"
     text: string,    // düz mətn (balon + fallback)
     blocks: [MessageBlock],
+    files: [Attachment],  // user mesajına bağlı fayllar
     streaming: bool,
     error: bool,
+    retrying: bool,  // avtomatik yenidən göndərilir
     stamp: string,   // "14:32"
 }
 
@@ -34,10 +44,18 @@ export struct ModelItem {
     enabled: bool,
 }
 
+export struct PickedFile {
+    id: int,          // MediaStore _ID
+    name: string,
+    media: string,   // image|video|doc
+    size: string,
+    uri: string,
+}
+
 // ---------- Qlobal state ----------
 
 export global App {
-    // ekran vəziyyəti
+    // ---- ekran vəziyyəti ----
     in-out property <bool> booting;            // açılış spinner-i
     in-out property <bool> sidebar-open;
     in-out property <bool> streaming;
@@ -45,45 +63,48 @@ export global App {
     in-out property <string> toast;            // qısa bildiriş
     in-out property <string> banner;           // davamlı xəta lentı (chat üstündə)
     in-out property <bool> auto-scroll: true;
-    in-out property <int> dot-tick;            // «düşünür» nöqtə animasiyası (Rust timer artırır)
-    in-out property <bool> need-refresh;       // söhbətlər yenilənməlidir
+    in-out property <int> dot-tick;            // «düşünür» nöqtə animasiyası
+    in-out property <bool> need-refresh;
 
-    // istifadəçi
-    in-out property <bool> signed-in;
+    // ---- giriş (login) vəziyyəti ----
+    in-out property <bool> authed: false;      // login ekranı keçildi (qonaq da olsa)
+    in-out property <bool> signed-in;          // real hesabla
     in-out property <bool> is-guest: true;
     in-out property <string> user-name: "Guest";
+    in-out property <int> login-step: 0;       // 0=welcome(Google/Email/Github) 1=email-form 2=captcha-fallback 3=token
+    in-out property <bool> login-busy;
+    in-out property <string> email;
+    in-out property <string> password;
+    in-out property <string> token-input;
+    in-out property <string> login-error;
+    in-out property <bool> password-visible;
+    in-out property <bool> token-auto-detected; // clipboard-da eyJ… tapıldı
 
-    // aktiv söhbət
+    // ---- aktiv söhbət ----
     in-out property <string> chat-id;
     in-out property <string> chat-title: "New Chat";
     in-out property <[ChatMessage]> messages;
 
-    // tarixçə
+    // ---- tarixçə ----
     in-out property <[ConvItem]> conversations;
     in-out property <bool> history-loading;
 
-    // composer
+    // ---- composer + əlavələr ----
     in-out property <string> input-text;
+    in-out property <[Attachment]> attachments;
+    in-out property <bool> picker-open;
+    in-out property <[PickedFile]> picker-files;
+    in-out property <bool> picker-loading;
     in-out property <bool> model-popup-open;
 
-    // modellər
+    // ---- modellər ----
     in-out property <[ModelItem]> models;
     in-out property <int> model-index;
-    in-out property <int> effort: 2;           // 0..2 — seçilmiş modelin səviyyələrinə görə
+    in-out property <int> effort: 2;
     in-out property <string> effort-0: "Low";
     in-out property <string> effort-1: "Medium";
     in-out property <string> effort-2: "High";
     out property <string> model-name: models.length > 0 && model-index >= 0 && model-index < models.length ? models[model-index].name : "GLM";
-
-    // signin modal
-    in-out property <bool> signin-open;
-    in-out property <int> signin-tab: 0;       // 0=email 1=token
-    in-out property <string> email;
-    in-out property <string> password;
-    in-out property <string> token-input;
-    in-out property <string> signin-error;
-    in-out property <bool> signin-busy;
-    in-out property <bool> password-visible;
 
     // ---------- Callbacks (Rust tərəfindən qoşulur) ----------
     callback send(string);
@@ -97,6 +118,13 @@ export global App {
     callback do-token-sign-in(string);         // token
     callback continue-as-guest();
     callback sign-out();
+    callback open-browser(string);             // URL → sistem brauzeri (JNI)
+    callback check-clipboard-token();          // clipboard-da JWT axtar
+    callback open-picker();                    // MediaStore fayl seçici
+    callback pick-file(string);                // seçilmiş faylın URI-si
+    callback close-picker();
+    callback remove-attachment(int);           // indeks
+    callback retry-send();                     // son user mesajını yenidən göndər
     callback select-model(int);
     callback set-effort(int);
     callback copy-to-clipboard(string);

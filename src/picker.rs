@@ -1,0 +1,466 @@
+//! Android platform inteqrasiyası (JNI) — clipboard.rs-in sübut olmuş nümunəsinə uyğun:
+//! - MediaStore-dan fayl siyahısı (native fayl seçici üçün)
+//! - ContentResolver ilə fayl oxunması (URI → bytes)
+//! - Sistem brauzerini açmaq (ACTION_VIEW)
+//! - Clipboard oxunması (token avtomatik aşkarlanması üçün)
+//! - Runtime icazə istəyi (READ_MEDIA_IMAGES/VIDEO, köhnə: READ_EXTERNAL_STORAGE)
+
+#[derive(Clone, Debug)]
+pub struct MediaFile {
+    pub id: i64,
+    pub name: String,
+    pub media: String, // image|video|doc
+    pub size: i64,
+    pub uri: String,
+}
+
+/// JNI mühiti ndk_context-dən alınır (android-activity tərəfindən qeyd olunur).
+#[cfg(target_os = "android")]
+fn with_env<F, R>(f: F) -> Option<R>
+where
+    F: FnOnce(&mut jni::JNIEnv<'static>) -> R,
+{
+    use jni::sys::{jobject, JavaVM as RawJavaVM};
+    let ctx = ndk_context::android_context();
+    let vm_raw = ctx.vm() as *mut RawJavaVM;
+    let mut env = unsafe {
+        match jni::JavaVM::from_raw(vm_raw) {
+            Ok(vm) => match vm.attach_current_thread() {
+                Ok(e) => e,
+                Err(_) => return None,
+            },
+            Err(_) => return None,
+        }
+    };
+    Some(f(&mut env))
+}
+
+/// Sistem brauzerində URL aç (ACTION_VIEW) — WebView YOX
+pub fn open_url(url: &str) {
+    #[cfg(target_os = "android")]
+    {
+        use jni::objects::JValue;
+        use jni::sys::jobject;
+        let url = url.to_string();
+        let _ = with_env(move |env| {
+            let ctx = unsafe {
+                jni::objects::JObject::from_raw(ndk_context::android_context().context() as jobject)
+            };
+            let r: Result<(), jni::errors::Error> = (|| {
+                // Uri.parse(url)
+                let jurl = env.new_string(&url)?;
+                let uri = env
+                    .call_static_method(
+                        "android/net/Uri",
+                        "parse",
+                        "(Ljava/lang/String;)Landroid/net/Uri;",
+                        &[JValue::Object(&jurl)],
+                    )?
+                    .l()?;
+                // new Intent(ACTION_VIEW, uri)
+                let action = env.new_string("android.intent.action.VIEW")?;
+                let intent = env.new_object(
+                    "android/content/Intent",
+                    "(Ljava/lang/String;Landroid/net/Uri;)V",
+                    &[JValue::Object(&action), JValue::Object(&uri)],
+                )?;
+                // setFlags(FLAG_ACTIVITY_NEW_TASK)
+                let flag = env
+                    .get_static_field("android/content/Intent", "FLAG_ACTIVITY_NEW_TASK", "I")?
+                    .i()?;
+                env.call_method(
+                    &intent,
+                    "setFlags",
+                    "(I)Landroid/content/Intent;",
+                    &[JValue::Int(flag)],
+                )?;
+                // context.startActivity(intent)
+                env.call_method(
+                    &ctx,
+                    "startActivity",
+                    "(Landroid/content/Intent;)V",
+                    &[JValue::Object(&intent)],
+                )?;
+                Ok(())
+            })();
+            if let Err(e) = r {
+                eprintln!("[open_url] JNI: {}", e);
+            }
+        });
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        println!("[open_url] {}", url);
+    }
+}
+
+/// Runtime icazə istə (fayl seçici üçün)
+pub fn request_storage_permission() {
+    #[cfg(target_os = "android")]
+    {
+        use jni::objects::JValue;
+        use jni::sys::jobject;
+        let _ = with_env(|env| {
+            let ctx = unsafe {
+                jni::objects::JObject::from_raw(ndk_context::android_context().context() as jobject)
+            };
+            let r: Result<(), jni::errors::Error> = (|| {
+                let sdk = env.get_static_field("android/os/Build$VERSION", "SDK_INT", "I")?.i()?;
+                let perms: Vec<&str> = if sdk >= 33 {
+                    vec!["android.permission.READ_MEDIA_IMAGES", "android.permission.READ_MEDIA_VIDEO"]
+                } else {
+                    vec!["android.permission.READ_EXTERNAL_STORAGE"]
+                };
+                // artıq verilibsə istəmə
+                let mut granted = true;
+                for p in &perms {
+                    let jp = env.new_string(p)?;
+                    let st = env.call_method(
+                        &ctx,
+                        "checkSelfPermission",
+                        "(Ljava/lang/String;)I",
+                        &[JValue::Object(&jp)],
+                    )?.i()?;
+                    if st != 0 {
+                        granted = false;
+                    }
+                }
+                if granted {
+                    return Ok(());
+                }
+                // requestPermissions(String[], 1)
+                let arr = env.new_object_array(
+                    perms.len() as i32,
+                    "java/lang/String",
+                    env.new_string("")?,
+                )?;
+                for (i, p) in perms.iter().enumerate() {
+                    let jp = env.new_string(p)?;
+                    env.set_object_array_element(&arr, i as i32, &jp)?;
+                }
+                env.call_method(
+                    &ctx,
+                    "requestPermissions",
+                    "([Ljava/lang/String;I)V",
+                    &[JValue::Object(&arr), JValue::Int(1)],
+                )?;
+                Ok(())
+            })();
+            if let Err(e) = r {
+                eprintln!("[perm] JNI: {}", e);
+            }
+        });
+    }
+}
+
+/// Bir MediaStore kolleksiyasından faylları oxu
+#[cfg(target_os = "android")]
+fn query_collection(
+    env: &mut jni::JNIEnv<'static>,
+    cr: &jni::objects::JObject<'static>,
+    uri_field_class: &str,
+    media: &str,
+    limit: i32,
+    out: &mut Vec<MediaFile>,
+) {
+    use jni::objects::JValue;
+
+    let uri = match env.get_static_field(uri_field_class, "EXTERNAL_CONTENT_URI", "Landroid/net/Uri;") {
+        Ok(u) => match u.l() {
+            Ok(u) => u,
+            Err(_) => return,
+        },
+        Err(_) => return,
+    };
+
+    let projection = match env.new_object_array(3, "java/lang/String", env.new_string("").ok()?) {
+        Ok(a) => a,
+        Err(_) => return,
+    };
+    let c0 = env.new_string("_id").ok()?;
+    let c1 = env.new_string("_display_name").ok()?;
+    let c2 = env.new_string("_size").ok()?;
+    if env.set_object_array_element(&projection, 0, &c0).is_err() {
+        return;
+    }
+    if env.set_object_array_element(&projection, 1, &c1).is_err() {
+        return;
+    }
+    if env.set_object_array_element(&projection, 2, &c2).is_err() {
+        return;
+    }
+
+    let sort = match env.new_string("date_modified DESC") {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let cursor = env
+        .call_method(
+            cr,
+            "query",
+            "(Landroid/net/Uri;[Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;Ljava/lang/String;)Landroid/database/Cursor;",
+            &[
+                JValue::Object(&uri),
+                JValue::Object(&projection),
+                JValue::Object(&jni::objects::JObject::null()),
+                JValue::Object(&jni::objects::JObject::null()),
+                JValue::Object(&sort),
+            ],
+        )
+        .and_then(|r| r.l());
+    let cursor = match cursor {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    let mut count = 0;
+    loop {
+        if count >= limit {
+            break;
+        }
+        let moved = env
+            .call_method(&cursor, "moveToNext", "()Z", &[])
+            .and_then(|r| r.z())
+            .unwrap_or(false);
+        if !moved {
+            break;
+        }
+        let id = env
+            .call_method(&cursor, "getLong", "(I)J", &[JValue::Int(0)])
+            .and_then(|r| r.j())
+            .unwrap_or(0);
+        let name = env
+            .call_method(&cursor, "getString", "(I)Ljava/lang/String;", &[JValue::Int(1)])
+            .and_then(|r| r.l())
+            .ok()
+            .and_then(|j| {
+                let s = jni::objects::JString::from(j);
+                env.get_string(&s).ok().map(|g| g.to_string_lossy().to_string())
+            })
+            .unwrap_or_default();
+        let size = env
+            .call_method(&cursor, "getLong", "(I)J", &[JValue::Int(2)])
+            .and_then(|r| r.j())
+            .unwrap_or(0);
+        if name.is_empty() {
+            continue;
+        }
+        let uri_str = match media {
+            "image" => format!("content://media/external/images/media/{}", id),
+            "video" => format!("content://media/external/video/media/{}", id),
+            _ => format!("content://media/external/downloads/{}", id),
+        };
+        out.push(MediaFile {
+            id,
+            name,
+            media: media.to_string(),
+            size,
+            uri: uri_str,
+        });
+        count += 1;
+    }
+    let _ = env.call_method(&cursor, "close", "()V", &[]);
+}
+
+/// MediaStore-dan son faylları oxu (şəkil + video + downloads)
+pub fn query_media_files(limit: i32) -> Vec<MediaFile> {
+    #[cfg(target_os = "android")]
+    {
+        use jni::sys::jobject;
+        with_env(move |env| {
+            let ctx = unsafe {
+                jni::objects::JObject::from_raw(ndk_context::android_context().context() as jobject)
+            };
+            let cr = env
+                .call_method(&ctx, "getContentResolver", "()Landroid/content/ContentResolver;", &[])
+                .and_then(|r| r.l())
+                .ok();
+            let cr = match cr {
+                Some(c) => c,
+                None => return Vec::new(),
+            };
+            let mut out: Vec<MediaFile> = Vec::new();
+            query_collection(env, &cr, "android/provider/MediaStore$Images$Media", "image", limit, &mut out);
+            query_collection(env, &cr, "android/provider/MediaStore$Video$Media", "video", limit, &mut out);
+            query_collection(env, &cr, "android/provider/MediaStore$Downloads", "doc", limit, &mut out);
+            out
+        })
+        .unwrap_or_default()
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = limit;
+        vec![
+            MediaFile { id: 1, name: "sample-image.jpg".into(), media: "image".into(), size: 245_760, uri: "file:///tmp/sample-image.jpg".into() },
+            MediaFile { id: 2, name: "document.pdf".into(), media: "doc".into(), size: 1_234_567, uri: "file:///tmp/document.pdf".into() },
+        ]
+    }
+}
+
+/// Content URI-ni bytes kimi oxu (upload üçün) → (bytes, ad, mime)
+pub fn read_uri_bytes(uri: &str) -> Result<(Vec<u8>, String, String), String> {
+    #[cfg(target_os = "android")]
+    {
+        use jni::objects::JValue;
+        use jni::sys::jobject;
+        let uri = uri.to_string();
+        with_env(move |env| {
+            let ctx = unsafe {
+                jni::objects::JObject::from_raw(ndk_context::android_context().context() as jobject)
+            };
+            let r: Result<(Vec<u8>, String, String), String> = (|| {
+                let cr = env
+                    .call_method(&ctx, "getContentResolver", "()Landroid/content/ContentResolver;", &[])
+                    .l()
+                    .map_err(|e| format!("resolver: {}", e))?;
+
+                // Uri.parse
+                let juri_str = env.new_string(&uri).map_err(|e| e.to_string())?;
+                let juri = env
+                    .call_static_method(
+                        "android/net/Uri",
+                        "parse",
+                        "(Ljava/lang/String;)Landroid/net/Uri;",
+                        &[JValue::Object(&juri_str)],
+                    )
+                    .l()
+                    .map_err(|e| e.to_string())?;
+
+                // display name
+                let mut name = "file".to_string();
+                let proj = env
+                    .new_object_array(1, "java/lang/String", env.new_string("_display_name").map_err(|e| e.to_string())?)
+                    .map_err(|e| e.to_string())?;
+                if let Ok(cursor) = env
+                    .call_method(
+                        &cr,
+                        "query",
+                        "(Landroid/net/Uri;[Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;Ljava/lang/String;)Landroid/database/Cursor;",
+                        &[
+                            JValue::Object(&juri),
+                            JValue::Object(&proj),
+                            JValue::Object(&jni::objects::JObject::null()),
+                            JValue::Object(&jni::objects::JObject::null()),
+                            JValue::Object(&jni::objects::JObject::null()),
+                        ],
+                    )
+                    .and_then(|r| r.l())
+                {
+                    let moved = env
+                        .call_method(&cursor, "moveToFirst", "()Z", &[])
+                        .and_then(|r| r.z())
+                        .unwrap_or(false);
+                    if moved {
+                        if let Ok(j) = env
+                            .call_method(&cursor, "getString", "(I)Ljava/lang/String;", &[JValue::Int(0)])
+                            .and_then(|r| r.l())
+                        {
+                            let s = jni::objects::JString::from(j);
+                            if let Ok(g) = env.get_string(&s) {
+                                name = g.to_string_lossy().to_string();
+                            }
+                        }
+                    }
+                    let _ = env.call_method(&cursor, "close", "()V", &[]);
+                }
+
+                // mime
+                let mime = env
+                    .call_method(&cr, "getType", "(Landroid/net/Uri;)Ljava/lang/String;", &[JValue::Object(&juri)])
+                    .and_then(|r| r.l())
+                    .ok()
+                    .and_then(|j| {
+                        let s = jni::objects::JString::from(j);
+                        env.get_string(&s).ok().map(|g| g.to_string_lossy().to_string())
+                    })
+                    .unwrap_or_else(|| "application/octet-stream".into());
+
+                // openInputStream → ByteArrayOutputStream → toByteArray
+                let istream = env
+                    .call_method(&cr, "openInputStream", "(Landroid/net/Uri;)Ljava/io/InputStream;", &[JValue::Object(&juri)])
+                    .l()
+                    .map_err(|e| format!("open: {}", e))?;
+                let baos = env
+                    .new_object("java/io/ByteArrayOutputStream", "()V", &[])
+                    .map_err(|e| e.to_string())?;
+                let buf = env.new_byte_array(65536).map_err(|e| e.to_string())?;
+                loop {
+                    let n = env
+                        .call_method(&istream, "read", "([B)I", &[JValue::Object(&buf)])
+                        .and_then(|r| r.i())
+                        .map_err(|e| format!("read: {}", e))?;
+                    if n <= 0 {
+                        break;
+                    }
+                    env.call_method(&baos, "write", "([BII)V", &[JValue::Object(&buf), JValue::Int(0), JValue::Int(n)])
+                        .map_err(|e| e.to_string())?;
+                }
+                let _ = env.call_method(&istream, "close", "()V", &[]);
+                let bytes = env
+                    .call_method(&baos, "toByteArray", "()[B", &[])
+                    .l()
+                    .map_err(|e| e.to_string())?;
+                let arr = jni::objects::JByteArray::from(bytes);
+                let elems = env.convert_byte_array(&arr).map_err(|e| e.to_string())?;
+                Ok((elems, name, mime))
+            })();
+            r
+        })
+        .unwrap_or_else(|| Err("JNI env unavailable".into()))
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let name = uri.rsplit('/').next().unwrap_or("file").to_string();
+        let mime = if name.ends_with(".jpg") || name.ends_with(".png") {
+            "image/jpeg".to_string()
+        } else {
+            "application/pdf".to_string()
+        };
+        Ok((b"desktop-test-content".to_vec(), name, mime))
+    }
+}
+
+/// Clipboard-dan mətn oxu (token avtomatik aşkarlanması)
+pub fn read_clipboard_text() -> Option<String> {
+    #[cfg(target_os = "android")]
+    {
+        use jni::objects::JValue;
+        use jni::sys::jobject;
+        with_env(|env| {
+            let ctx = unsafe {
+                jni::objects::JObject::from_raw(ndk_context::android_context().context() as jobject)
+            };
+            let r: Result<String, jni::errors::Error> = (|| {
+                let svc = env
+                    .get_static_field("android/content/Context", "CLIPBOARD_SERVICE", "Ljava/lang/String;")?
+                    .l()?;
+                let cm = env
+                    .call_method(
+                        &ctx,
+                        "getSystemService",
+                        "(Ljava/lang/String;)Ljava/lang/Object;",
+                        &[JValue::Object(&svc)],
+                    )?
+                    .l()?;
+                let clip = env.call_method(&cm, "getPrimaryClip", "()Landroid/content/ClipData;", &[])?.l()?;
+                let n = env.call_method(&clip, "getItemCount", "()I", &[])?.i()?;
+                if n < 1 {
+                    return Err(jni::errors::Error::NullPtr("empty clip".into()));
+                }
+                let item = env
+                    .call_method(&clip, "getItemAt", "(I)Landroid/content/ClipData$Item;", &[JValue::Int(0)])?
+                    .l()?;
+                let cs = env.call_method(&item, "coerceToText", "()Ljava/lang/CharSequence;", &[])?.l()?;
+                let js = jni::objects::JString::from(cs);
+                let s: String = env.get_string(&js)?.into();
+                Ok(s)
+            })();
+            r.ok()
+        })
+        .flatten()
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        std::env::var("ZAI_TEST_TOKEN").ok()
+    }
+}

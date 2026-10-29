@@ -5,7 +5,7 @@
 //! Buna görə: timeout(None) + hər SSE oxunuşu üçün ayrı read-timeout streami
 //! öz threadində idarə edirik (watchdog: 150s fasilə = kəsinti sayılır).
 
-use crate::api::{self, Client, SignatureInfo};
+use crate::api::{self, Client, SignatureInfo, UploadedFile};
 use crate::markdown;
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader};
@@ -98,12 +98,31 @@ fn friendly_error(code: &str, detail: &str) -> String {
         return "App version is outdated — please update.".into();
     }
     if detail.contains("user_limit") || detail.contains("rate_limit") {
-        return "Rate limit reached — wait a moment and try again.".into();
+        return "RETRYABLE:Rate limit reached — retrying automatically…".into();
     }
     if detail.contains("global_limit") {
-        return "The server is busy — try again shortly.".into();
+        return "RETRYABLE:The server is busy — retrying automatically…".into();
+    }
+    if detail.contains("busy") || detail.contains("overloaded") || detail.contains("temporarily") {
+        return "RETRYABLE:Server is busy — retrying automatically…".into();
     }
     detail.to_string()
+}
+
+/// Xəta avtomatik yenidən cəhd üçün uyğundurmu?
+pub fn is_retryable_error(msg: &str) -> bool {
+    msg.starts_with("RETRYABLE:")
+        || msg.contains("Stream interrupted")
+        || msg.contains("WAF block")
+        || msg.contains("HTTP 502")
+        || msg.contains("HTTP 503")
+        || msg.contains("HTTP 504")
+        || msg.contains("HTTP 429")
+}
+
+/// RETRYABLE: prefiksini təmizlə
+pub fn clean_error(msg: &str) -> String {
+    msg.trim_start_matches("RETRYABLE:").to_string()
 }
 
 fn phase_label(p: &str) -> String {
@@ -132,24 +151,25 @@ pub fn run_completion(
     user_msg_id: &str,
     assistant_msg_id: &str,
     is_first: bool,
+    files: &[UploadedFile],             // istifadəçinin əlavələri (silinmir!)
     job: &Job,
     emit: &mut dyn FnMut(StreamEvent),
 ) -> Result<(), String> {
     // ---------- 1. Chat yarat (lazımsa) ----------
     if chat_id.is_empty() {
-        let id = client.chat_new(token, prompt, model, user_msg_id)?;
+        let id = client.chat_new_with_files(token, prompt, model, user_msg_id, files)?;
         *chat_id = id.clone();
         emit(StreamEvent::ChatCreated(id));
     }
 
-    // ---------- 2. Əsas axın (retry ilə) ----------
+    // ---------- 2. Əsas axın (retry ilə — avtomatik bərpa) ----------
     let mut attempt = 0u32;
-    let max_attempts = 3u32;
+    let max_attempts = 4u32;
     loop {
         attempt += 1;
         match run_once(
             client, token, user_id, chat_id, chat_title, history, prompt, model, effort,
-            user_msg_id, assistant_msg_id, is_first, job, emit,
+            user_msg_id, assistant_msg_id, is_first, files, job, emit,
         ) {
             Ok(()) => return Ok(()),
             Err(e) if e == "UNAUTHORIZED" => {
@@ -158,12 +178,17 @@ pub fn run_completion(
             Err(e) if e == "CAPTCHA" => {
                 return Err("CAPTCHA".into());
             }
-            Err(e) if e.starts_with("RETRY:") => {
-                let inner = e.trim_start_matches("RETRY:").to_string();
+            Err(e) if e.starts_with("RETRY:") || is_retryable_error(&e) => {
+                let inner = if e.starts_with("RETRY:") {
+                    e.trim_start_matches("RETRY:").to_string()
+                } else {
+                    clean_error(&e)
+                };
                 if attempt >= max_attempts || job.is_stopped() {
                     return Err(inner);
                 }
-                std::thread::sleep(Duration::from_millis(1200));
+                emit(StreamEvent::Phase("Retrying…".into()));
+                std::thread::sleep(Duration::from_millis(1200u64 + 600 * attempt as u64));
                 continue;
             }
             Err(e) => return Err(e),
@@ -185,6 +210,7 @@ fn run_once(
     user_msg_id: &str,
     assistant_msg_id: &str,
     is_first: bool,
+    files: &[UploadedFile],
     job: &Job,
     emit: &mut dyn FnMut(StreamEvent),
 ) -> Result<(), String> {
@@ -196,7 +222,21 @@ fn run_once(
         .iter()
         .map(|(r, c)| json!({"role": r, "content": c}))
         .collect();
-    messages.push(json!({"role": "user", "content": prompt}));
+    // istifadəçi mesajı: fayl varsa content massiv (veb formatı)
+    if files.is_empty() {
+        messages.push(json!({"role": "user", "content": prompt}));
+    } else {
+        let mut parts: Vec<Value> = vec![json!({"type": "text", "text": prompt})];
+        for f in files {
+            let url = if f.direct_url.is_empty() { &f.id } else { &f.direct_url };
+            match f.media.as_str() {
+                "image" => parts.push(json!({"type": "image_url", "image_url": {"url": url}})),
+                "video" => parts.push(json!({"type": "video_url", "video_url": {"url": url}})),
+                _ => parts.push(json!({"type": "file_url", "file_url": {"url": url}})),
+            }
+        }
+        messages.push(json!({"role": "user", "content": parts}));
+    }
 
     let body = json!({
         "stream": true,
@@ -311,7 +351,7 @@ fn run_once(
     // ---------- serverdə saxla ----------
     if !stopped || !full.is_empty() {
         let chat_obj = build_chat_update(
-            chat_id, chat_title, model, history, user_msg_id, assistant_msg_id, prompt, &full,
+            chat_id, chat_title, model, history, user_msg_id, assistant_msg_id, prompt, &full, files,
         );
         let _ = client.chat_update(token, &chat_obj);
     }
@@ -337,6 +377,7 @@ fn build_chat_update(
     assistant_msg_id: &str,
     prompt: &str,
     full_content: &str,
+    files: &[UploadedFile],
 ) -> Value {
     let mut ids: Vec<String> = Vec::new();
     // history üçün id-lər yoxdur — sadə saxlama formatı: synthetic id-lər
@@ -361,13 +402,27 @@ fn build_chat_update(
         );
     }
     let n = ids.len();
+    let user_content: Value = if files.is_empty() {
+        Value::String(prompt.to_string())
+    } else {
+        let mut parts: Vec<Value> = vec![json!({"type": "text", "text": prompt})];
+        for f in files {
+            let url = if f.direct_url.is_empty() { &f.id } else { &f.direct_url };
+            match f.media.as_str() {
+                "image" => parts.push(json!({"type": "image_url", "image_url": {"url": url}})),
+                "video" => parts.push(json!({"type": "video_url", "video_url": {"url": url}})),
+                _ => parts.push(json!({"type": "file_url", "file_url": {"url": url}})),
+            }
+        }
+        Value::Array(parts)
+    };
     messages.insert(
         user_msg_id.to_string(),
         json!({
             "id": user_msg_id,
             "parentId": if n >= 2 { Value::String(ids[n - 2].clone()) } else { Value::Null },
             "childrenIds": [assistant_msg_id],
-            "role": "user", "content": prompt, "timestamp": ts, "models": [model]
+            "role": "user", "content": user_content, "timestamp": ts, "models": [model]
         }),
     );
     messages.insert(

@@ -3,12 +3,13 @@
 
 slint::include_modules!();
 
-mod api;
+pub mod api;
 mod clipboard;
 mod controller;
-mod markdown;
+pub mod markdown;
+mod picker;
 mod store;
-mod stream;
+pub mod stream;
 
 /// Giriş nöqtəsi: Android (cdylib → android_main) və Desktop (main.rs bin)
 pub fn run_app() {

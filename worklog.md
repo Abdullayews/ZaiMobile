@@ -1,26 +1,67 @@
-# ZaiMobile v4.0 — İş jurnalı (2026-10-28/29)
+# ZaiMobile v6.0 — İş jurnalı
 
-## Kök səbəb analizi (nə üçün köhnə app işləmirdi)
-1. **egui/eframe Android dəstəyi etibarsızdır** — IME (klaviatura) və GPU init cihazdan-cihaza qırılır
-2. **chat.z.ai serveri FRONTEND_CAPTCHA_REQUIRED tələb etməyə başlayıb** — köhnə app bunu işləmirdi
-3. **Alibaba CDN WAF 405 blokları** — veb app-də belə yoxdur, köhnə app-də retry yox idi
+## 2026-10-29 — v6.0 "Adi hesab girişi" (WebView tamamilə silindi)
 
-## v4.0 həlli
-- **UI**: egui → **Slint 1.18** (backend-android-activity-06 = NativeActivity + Skia renderer).
-  Səbəb: Slint-in rəsmi, kommersiya dəstəkli Android backend-i (IME, clipboard, vs. javahelper-də).
-- **Şriftlər** `.slint` faylında `import "…ttf"` ilə binariyə gömülür (sistem şrift riski sıfır).
-- **Captcha araşdırması** (tam): AliyunCaptcha v3 protokolu deşifrə edildi
-  (InitCaptchaV3/VerifyCaptchaV3, SceneId=didk33e0, puzzle template-matching + kvadratik
-  slider xəritələməsi piece(d)=0.00355d²+0.0769d) — amma `data` sahəsi şifrələnir və
-  deviceToken FeiLin brauzer barmaq izindən gəlir → native həll mümkün deyil.
-  HƏLL: captcha yalnız riskli IP-lərdə tələb olunur → app 3 giriş yolu verir
-  (email+şifrə / token yapışdır / qonaq) + captcha xətasında aydın yönləndirmə.
-- **WAF retry**: bütün endpoint-lərdə 405/403 HTML → 12 cəhd, 2.5s→9s backoff (veb app-də yoxdur!).
-- **Canlı testlər** (desktop preview + Xvfb + VLM):
-  - UI render: nav/welcome/kart şəbəkəsi/composer — veb dizaynı ilə uyğun ✓
-  - Tam axın: qonaq token → modellər → chats/new (retry keçdi!) → SSE → captcha aşkarlandı ✓
-  - Xəta UI: banner + qırmızı mətn düzgün render olunur ✓
+### İstək
+"webwiev ilə alınmır. PreStream sistemə bax — hesaba giriş edib api ilə baxırdıq,
+indi lazımdır ki adi hesaba giriş məntiqində olsun. webview olmadan saytın bütün
+hərşeyini mobil üçün kopyala, uyğun hala gətir."
 
-## Build/CI
-- CI sübut olunub: aarch64-linux-android + aapt2 + apksigner + beta release
-- v4.0.0-beta.N, prerelease, make_latest: false
+### Araşdırma nəticələri (canlı, headless Chromium ilə)
+1. **Signin API**: `POST /api/v1/auths/signin {email, password, captcha_verify_param}`
+   → captcha_verify_param **həmişə** tələb olunur ("The captcha verification failed").
+2. **Captcha sistemi**: Aliyun Captcha 2.0 (SceneId 36qgs6xb, region sgp, prefix no8xfe,
+   INPAINTING jigsaw). Protokol: InitCaptchaV3/VerifyCaptchaV3 (HMAC-SHA1 imzalı RPC) +
+   FeiLin cihaz barmaq izi (deviceToken) + şifrələnmiş sürüşmə trayektoriyası (data).
+   → Native replikasiya mümkün deyil (kommersiya anti-bot şifrələməsi).
+3. **OAUTH yolu**: /auth/oauth/authorize yalnız z.ai-nin öz klientləri üçün (subscribe) — bağlı.
+4. **Upload**: `POST /api/v1/storage/pfs/files/upload` (multipart "file") →
+   `{code:0, data:{file:{id,...}}}` → content massivi: image_url/video_url/file_url (id ilə).
+   Qonaq üçün 403 — yalnız hesablı token ilə.
+5. **Dark tema palette-i**: saytın index CSS-indən (.dark bloku) dəqiq çıxarıldı.
+6. **Risk idarəetməsi**: bu serverin IP-si (datacenter) bu günkü çoxsaylı testlərdən sonra
+   FRONTEND_CAPTCHA_REQUIRED üçün işarələnib — tamamlama (completion) qonaq üçün bloklanır.
+   Təmiz mobil IP-də (istifadəçinin telefonu) bu aktiv olmamalıdır. Hesablı token ilə
+   adətən tələb olunmur.
+
+### v6.0 memarlıq
+- **Baza**: v4.0 (Slint 1.18 + NativeActivity + Skia) — sübut olunmuş API qatı
+  (imza HMAC-SHA256, WAF retry, SSE watchdog, 401 bərpası) qorunub saxlanıldı.
+- **WebView yoxdur**: src-tauri (v5.x) tamamilə silindi.
+- **Giriş**: tam ekran login səhifəsi (saytın /auth replikası):
+  - Addım 0: Continue with Google / Email / Github + Skip for now
+  - Addım 1: Email + şifrə (native) → POST signin → uğurlusa birbaşa daxil ol
+  - Addım 2 (captcha fallback): sistem brauzerində (ACTION_VIEW, WebView YOX) bir dəfə
+    giriş + clipboard-dan JWT-nin AVTOMATİK aşkarlanması (3s poll, "eyJ" + uzunluq)
+  - Addım 3: token əl ilə yapışdır
+- **Dark tema standart** (saytın dəqiq palette-i) + light dəstəyi (Theme.dark flag).
+- **Fayl əlavələri**: MediaStore native seçici (JNI ContentResolver.query: Images/Video/Downloads)
+  → icazə istəyi (READ_MEDIA_*) → ContentResolver.openInputStream → multipart upload →
+  content massivi ilə göndəriş → server tarixçəsində də saxlanılır (chat update).
+- **Avtomatik yenidən göndərmə**: RETRYABLE xətalar (busy/rate/WAF/5xx/şəbəkə) üçün
+  4 cəhd, eksponensial gecikmə, FAYLLAR VƏ MESAJ SAXLANILIR. UI "Retrying automatically…".
+- **Klaviatura fix**: Theme.NoTitleBar.Fullscreen → Theme.Material.NoActionBar
+  (FLAG_FULLSCREEN + adjustResize klassik conflict-i aradan qaldırıldı) + targetSdk 34
+  (Android 15 məcburi edge-to-edge-dən yayınma — sistemin inset idarəetməsi qalır).
+- **Rəsmi loqo**: v5.1-dən adaptive + monochrome ikonlar port edildi (bütün DPI-lər).
+- **Sürətli açılış**: boot → guest auth paralel, model siyahısı arxa planda, splash native.
+
+### Fayl struktur
+```
+src/api.rs       — HTTP + imza + signin + upload (UploadedFile, media_kind, human_size)
+src/stream.rs    — SSE + files content massivi + is_retryable_error (avtomatik retry)
+src/controller.rs— login axınları, əlavələr, clipboard poll, retry, bütün callback-lər
+src/picker.rs    — JNI: MediaStore, ACTION_VIEW, clipboard oxu, icazələr
+ui/login.slint   — 4 addımlı giriş səhifəsi
+ui/theme.slint   — dark+light (sayt CSS palette-i)
+ui/chat.slint    — əlavə önizləmələri (chip-lər), retry göstəricisi
+ui/modals.slint  — ModelPopup + FilePickerModal (MediaStore siyahısı)
+ui/sidebar.slint — hesab sırası (sign out / sign in)
+```
+
+### Yoxlamalar
+- Desktop build: təmiz (0 xəbərdarlıq) ✓
+- api_smoke (headless): guest auth ✓, models ✓ (GLM-5.3-Flash x-preview-l), chats/new ✓,
+  completion — IP işarələndiyindən captcha sorğusu (gözlənilən, təmiz IP-də olmayacaq) ⚠
+- Android target: aapt2 + NDK keçidi CI-də (eyni sxem v4.0-dan sübut olunub)
+- CI: v6.0.0-beta.N, imzalı, pre-release

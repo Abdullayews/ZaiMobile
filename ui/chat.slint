@@ -1,15 +1,16 @@
 // ============================================================
 //  Chat ekranı: nav + mesajlar (welcome daxil) + composer
-//  Veb dizaynı ilə 1:1 (light tema)
+//  Saytın dizaynı ilə 1:1 (dark standart, light da dəstəklənir)
 // ============================================================
 
 import { Theme } from "theme.slint";
 import { App } from "state.slint";
-import { MessageBlock, ChatMessage } from "state.slint";
+import { MessageBlock, ChatMessage, Attachment } from "state.slint";
 import { ListView } from "std-widgets.slint";
 import {
     IconPaperclip, IconStop, IconCopy, IconCheck, IconRefresh, IconChevronDown,
     IconArrowDown, IconAlert, IconSquarePen, IconX, IconPanelLeft, SendArrow,
+    IconImage, IconFileDoc, IconVideoFile,
 } from "icons.slint";
 
 // ---------- Kod bloku ----------
@@ -20,7 +21,7 @@ component CodeBlock inherits Rectangle {
     callback copy-code(string);
     property <bool> copied: false;
 
-    background: #181818;
+    background: Theme.code-bg;
     border-radius: 8px;
     height: 30px + code-area.height;
 
@@ -129,6 +130,53 @@ component BlockRow inherits VerticalLayout {
     }
 }
 
+// ---------- Mesajın əlavə önizləməsi ----------
+
+component AttachmentChip inherits Rectangle {
+    in property <Attachment> att;
+    height: 30px;
+    width: row.preferred-width + 8px;
+    background: Theme.surface-2;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: Theme.border;
+
+    row := HorizontalLayout {
+        padding-left: 6px; padding-right: 8px;
+        padding-top: 4px; padding-bottom: 4px;
+        spacing: 6px;
+        alignment: start;
+
+        if att.media == "image" : IconImage {
+            width: 16px; height: 16px; stroke: Theme.text-2; stroke-width: 1.6px;
+        }
+        if att.media == "video" : IconVideoFile {
+            width: 16px; height: 16px; stroke: Theme.text-2; stroke-width: 1.6px;
+        }
+        if att.media == "doc" : IconFileDoc {
+            width: 16px; height: 16px; stroke: Theme.text-2; stroke-width: 1.6px;
+        }
+        Text {
+            text: att.name;
+            color: att.status == 2 ? Theme.danger : Theme.text;
+            font-size: 12px;
+            font-family: Theme.font-body;
+            vertical-alignment: center;
+            overflow: elide;
+            width: 150px;
+        }
+        if att.status == 0 : Text {
+            text: "…";
+            color: Theme.text-3;
+            font-size: 12px;
+            vertical-alignment: center;
+        }
+        if att.status == 1 : IconCheck {
+            width: 13px; height: 13px; stroke: Theme.success; stroke-width: 2.2px;
+        }
+    }
+}
+
 // ---------- Bir mesaj (ListView elementi) ----------
 
 component MessageRow inherits VerticalLayout {
@@ -144,8 +192,17 @@ component MessageRow inherits VerticalLayout {
     padding-bottom: 10px;
 
     // ---- istifadəçi: sağda boz balon ----
-    if msg.role == "user" : HorizontalLayout {
+    if msg.role == "user" : VerticalLayout {
         alignment: end;
+        spacing: 6px;
+
+        // əlavələr (balon üstündə)
+        if msg.files.length > 0 : HorizontalLayout {
+            alignment: end;
+            spacing: 6px;
+            for a in msg.files : AttachmentChip { att: a; }
+        }
+
         bubble := Rectangle {
             width: min(parent.width * 0.85, btext.preferred-width + 26px);
             height: btext.preferred-height + 20px;
@@ -167,16 +224,16 @@ component MessageRow inherits VerticalLayout {
     if msg.role == "assistant" : VerticalLayout {
         spacing: 4px;
 
-        // xəta
+        // xəta (+retry göstəricisi)
         if msg.error : HorizontalLayout {
             spacing: 8px;
             alignment: start;
             IconAlert {
-                width: 17px; height: 17px; stroke: #d4380d; stroke-width: 2px;
+                width: 17px; height: 17px; stroke: Theme.danger; stroke-width: 2px;
             }
             Text {
-                text: root.msg.text;
-                color: #d4380d;
+                text: root.msg.retrying ? root.msg.text + "\n\nRetrying automatically…" : root.msg.text;
+                color: Theme.danger;
                 font-size: 14px;
                 font-family: Theme.font-body;
                 wrap: word-wrap;
@@ -220,7 +277,7 @@ component MessageRow inherits VerticalLayout {
                 width: 32px; height: 30px;
                 clicked => { root.copy-text(root.msg.text); root.copied = true; }
                 if root.copied : IconCheck {
-                    x: 8px; y: 7px; width: 16px; height: 16px; stroke: #1e8a3e; stroke-width: 2px;
+                    x: 8px; y: 7px; width: 16px; height: 16px; stroke: Theme.success; stroke-width: 2px;
                 }
                 if !root.copied : IconCopy {
                     x: 8px; y: 7px; width: 16px; height: 16px;
@@ -326,21 +383,42 @@ component Composer inherits Rectangle {
     border-color: Theme.border;
     drop-shadow-blur: 14px;
     drop-shadow-offset-y: 3px;
-    drop-shadow-color: #0d000000;
+    drop-shadow-color: #28000000;
 
-    property <bool> can-send: App.input-text != "" && !App.streaming;
+    property <bool> can-send: (App.input-text != "" || App.attachments.length > 0) && !App.streaming;
 
     VerticalLayout {
         padding: 14px;
         padding-bottom: 10px;
         spacing: 10px;
 
+        // əlavə önizləmələri (yuxarı sıra)
+        if App.attachments.length > 0 : HorizontalLayout {
+            spacing: 6px;
+            alignment: start;
+            for a[i] in App.attachments : Rectangle {
+                width: chip.width + 30px;
+                height: 32px;
+                chip := AttachmentChip { att: a; y: 1px; }
+                rm := TouchArea {
+                    x: parent.width - 28px; width: 28px; height: 32px;
+                    clicked => { App.remove-attachment(i); }
+                    IconX {
+                        x: 8px; y: 8px; width: 14px; height: 14px;
+                        stroke: rm.has-hover ? Theme.danger : Theme.text-3; stroke-width: 2px;
+                    }
+                }
+            }
+        }
+
         // mətn sahəsi + placeholder
         Rectangle {
-            height: input.preferred-height;
+            height: Math.min(input.preferred-height, Theme.composer-max-h);
+            clip: true;
             input := TextInput {
                 x: 0; y: 0;
                 width: parent.width;
+                height: Math.min(self.preferred-height, Theme.composer-max-h);
                 text <=> App.input-text;
                 font-size: 15px;
                 font-family: Theme.font-body;
@@ -363,7 +441,7 @@ component Composer inherits Rectangle {
 
             clip := TouchArea {
                 width: 32px; height: 32px;
-                clicked => { App.show-toast("Fayllar növbəti buraxılışda"); }
+                clicked => { App.open-picker(); }
                 IconPaperclip {
                     x: 7px; y: 7px; width: 18px; height: 18px;
                     stroke: clip.has-hover ? Theme.text : Theme.text-3;
@@ -419,11 +497,11 @@ component Composer inherits Rectangle {
                     }
                     if App.streaming : IconStop {
                         x: 9px; y: 9px; width: 16px; height: 16px;
-                        fill: #ffffff; stroke: #ffffff; stroke-width: 1px;
+                        fill: Theme.btn-text; stroke: Theme.btn-text; stroke-width: 1px;
                     }
                     if !App.streaming : SendArrow {
                         x: 8px; y: 8px; width: 18px; height: 18px;
-                        stroke: root.can-send ? #ffffff : #adadad;
+                        stroke: root.can-send ? Theme.btn-text : Theme.placeholder;
                         stroke-width: 2.4px;
                     }
                 }
@@ -443,7 +521,7 @@ export component ChatScreen inherits Rectangle {
     input-scope := FocusScope {
         key-pressed(event) => {
             if (event.text == Key.Escape) {
-                if (App.signin-open) { App.signin-open = false; return accept; }
+                if (App.picker-open) { App.picker-open = false; return accept; }
                 if (App.model-popup-open) { App.model-popup-open = false; return accept; }
                 if (App.sidebar-open) { App.sidebar-open = false; return accept; }
             }
@@ -499,8 +577,10 @@ export component ChatScreen inherits Rectangle {
                     height: 32px; y: 8px;
                     clicked => {
                         if (App.is-guest) {
-                            App.signin-tab = 0;
-                            App.signin-open = true;
+                            App.login-error = "";
+                            App.token-auto-detected = false;
+                            App.login-step = 0;
+                            App.authed = false;
                         } else {
                             App.sidebar-open = true;
                         }
@@ -510,14 +590,14 @@ export component ChatScreen inherits Rectangle {
                         height: 30px;
                         width: parent.width;
                         border-radius: 15px;
-                        background: App.is-guest ? Theme.btn-dark : #5c5c5c;
+                        background: App.is-guest ? Theme.btn-dark : Theme.subtle;
                         acct-box := HorizontalLayout {
                             padding-left: 12px; padding-right: 12px;
                             alignment: center;
                             Text {
                                 text: App.is-guest ? "Sign in" : App.user-name;
                                 font-size: 13px;
-                                color: #ffffff;
+                                color: App.is-guest ? Theme.btn-text : Theme.text;
                                 font-family: Theme.font-body;
                                 vertical-alignment: center;
                                 overflow: elide;
@@ -531,15 +611,15 @@ export component ChatScreen inherits Rectangle {
         // ---------- XƏTA LENTİ ----------
         if App.banner != "" : Rectangle {
             height: 42px;
-            background: #fff0f0;
+            background: Theme.danger-bg;
             HorizontalLayout {
                 padding-left: 14px; padding-right: 6px;
                 alignment: start;
                 spacing: 8px;
-                IconAlert { width: 16px; height: 16px; stroke: #e03131; stroke-width: 2px; y: 13px; }
+                IconAlert { width: 16px; height: 16px; stroke: Theme.danger; stroke-width: 2px; y: 13px; }
                 Text {
                     text: App.banner;
-                    color: #5f0000;
+                    color: Theme.danger;
                     font-size: 13px;
                     font-family: Theme.font-body;
                     vertical-alignment: center;
@@ -549,7 +629,7 @@ export component ChatScreen inherits Rectangle {
                 TouchArea {
                     width: 36px; height: 42px;
                     clicked => { App.banner = ""; }
-                    IconX { x: 10px; y: 13px; width: 16px; height: 16px; stroke: #e03131; stroke-width: 2px; }
+                    IconX { x: 10px; y: 13px; width: 16px; height: 16px; stroke: Theme.danger; stroke-width: 2px; }
                 }
             }
         }
@@ -566,7 +646,7 @@ export component ChatScreen inherits Rectangle {
                 }
             }
 
-            // mesaj siyahısı + aşağı sürüşdür düyməsi (eyni if daxilində)
+            // mesaj siyahısı + aşağı sürüşdür düyməsi
             if App.messages.length > 0 : Rectangle {
                 width: 100%;
                 height: 100%;
@@ -602,7 +682,7 @@ export component ChatScreen inherits Rectangle {
                     border-width: 1px;
                     border-color: Theme.border;
                     drop-shadow-blur: 8px;
-                    drop-shadow-color: #1a000000;
+                    drop-shadow-color: #33000000;
 
                     fab := TouchArea {
                         clicked => {

@@ -1,7 +1,8 @@
 //! Controller: Slint callback-lərinin qoşulması, arxa plan işləri (worker),
-//! state sinxronizasiyası və bütün ekran axınları.
+//! state sinxronizasiyası, giriş axınları, əlavələr və avtomatik retry.
 
-use crate::api::{self, AuthInfo, Client, ConvSummary, ModelInfo};
+use crate::api::{self, AuthInfo, Client, ConvSummary, ModelInfo, UploadedFile};
+use crate::picker::{self, MediaFile};
 use crate::store::{self, Persisted};
 use crate::stream::{self, Job, StreamEvent};
 use serde_json::Value;
@@ -11,7 +12,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use crate::{App, AppWindow, ChatMessage, ConvItem, MessageBlock, ModelItem};
+use crate::{App, AppWindow, Attachment, ChatMessage, ConvItem, MessageBlock, ModelItem, PickedFile};
 
 // ---------------- Daxili state ----------------
 
@@ -20,8 +21,10 @@ pub struct RawMsg {
     pub id: String,
     pub role: String,
     pub text: String,
+    pub files: Vec<UploadedFile>,
     pub streaming: bool,
     pub error: bool,
+    pub retrying: bool,
     pub stamp: String,
 }
 
@@ -34,6 +37,10 @@ pub struct Core {
     pub current_job: Mutex<Option<Arc<Job>>>,
     pub models: Mutex<Vec<ModelInfo>>,
     pub boot_done: Mutex<bool>,
+    /// composer-dəki yüklənmiş əlavələr (upload bitmiş)
+    pub uploads: Mutex<Vec<UploadedFile>>,
+    /// yükləmə növbəsi gedişinə görə (status UI-da göstərilir)
+    pub upload_state: Mutex<Vec<(String, i32)>>, // (name, status 0/1/2)
 }
 
 impl Core {
@@ -52,6 +59,8 @@ impl Core {
             current_job: Mutex::new(None),
             models: Mutex::new(Vec::new()),
             boot_done: Mutex::new(false),
+            uploads: Mutex::new(Vec::new()),
+            upload_state: Mutex::new(Vec::new()),
         })
     }
 }
@@ -79,6 +88,20 @@ fn blocks_model(text: &str) -> slint::ModelRc<MessageBlock> {
     vm.into()
 }
 
+fn files_model(files: &[UploadedFile]) -> slint::ModelRc<Attachment> {
+    let vm: Rc<slint::VecModel<Attachment>> = Rc::new(slint::VecModel::default());
+    for f in files {
+        vm.push(Attachment {
+            id: f.id.clone().into(),
+            name: f.name.clone().into(),
+            media: f.media.clone().into(),
+            status: 1,
+            size: api::human_size(f.size).into(),
+        });
+    }
+    vm.into()
+}
+
 fn raw_to_ui(m: &RawMsg) -> ChatMessage {
     ChatMessage {
         id: m.id.clone().into(),
@@ -89,8 +112,10 @@ fn raw_to_ui(m: &RawMsg) -> ChatMessage {
         } else {
             blocks_model(&m.text)
         },
+        files: if m.role == "user" { files_model(&m.files) } else { slint::ModelRc::default() },
         streaming: m.streaming,
         error: m.error,
+        retrying: m.retrying,
         stamp: m.stamp.clone().into(),
     }
 }
@@ -220,11 +245,13 @@ fn apply_auth(core: &Core, weak: &Weak<AppWindow>, auth: &AuthInfo) {
                 g.set_user_name(name.into());
                 g.set_is_guest(guest);
                 g.set_signed_in(!guest);
-                g.set_signin_open(false);
-                g.set_signin_busy(false);
-                g.set_signin_error("".into());
+                g.set_authed(true);
+                g.set_login_busy(false);
+                g.set_login_error("".into());
                 g.set_email("".into());
                 g.set_password("".into());
+                g.set_token_input("".into());
+                g.set_login_step(0);
             }
         }
     });
@@ -369,36 +396,28 @@ fn rel_time(ts: i64) -> String {
 
 fn spawn_boot(core: Arc<Core>, weak: Weak<AppWindow>) {
     std::thread::spawn(move || {
-        // WAF cookie-lərini al (brauzerin açılışına bənzər)
+        // WAF cookie-ləri + paralel başlanğıc — açılış sürəti üçün qısa tut
         core.client.warm_up_home();
 
         let saved = l(&core.persisted).clone();
         let mut auth: Option<AuthInfo> = None;
         let mut token_invalid = false;
 
-        if !saved.token.is_empty() {
+        // 1) saxlanmış etibarlı token?
+        if !saved.token.is_empty() && !saved.is_guest {
             match core.client.verify_token(&saved.token) {
                 Ok(a) => auth = Some(a),
-                Err(_) => {
-                    token_invalid = true;
-                }
+                Err(_) => token_invalid = true,
             }
         }
+        // 2) qonaq
         if auth.is_none() {
             match core.client.guest_auth() {
                 Ok(a) => auth = Some(a),
                 Err(e) => {
                     let msg = format!("Network error: {}", e);
-                    let _ = slint::invoke_from_event_loop({
-                        let weak = weak.clone();
-                        move || {
-                            if let Some(app) = weak.upgrade() {
-                                app.global::<App>().set_banner(msg.into());
-                            }
-                        }
-                    });
-                    // yenidən cəhd 10 saniyədən sonra
-                    std::thread::sleep(Duration::from_secs(10));
+                    banner(&weak, &msg);
+                    std::thread::sleep(Duration::from_secs(6));
                     match core.client.guest_auth() {
                         Ok(a) => auth = Some(a),
                         Err(_) => {
@@ -420,14 +439,9 @@ fn spawn_boot(core: Arc<Core>, weak: Weak<AppWindow>) {
             apply_auth(&core, &weak, a);
         }
         *l(&core.boot_done) = true;
-        spawn_load_models(core.clone(), weak.clone());
-        let guest = l(&core.persisted).is_guest;
-        if !guest {
-            spawn_load_conversations(core.clone(), weak.clone());
-        }
-        if token_invalid {
-            toast(&weak, "Session expired — signed in as guest");
-        }
+
+        // UI-də əvvəlcə login ekranını göstər (authed yalnız istifadəçi davam edəndə true olur).
+        // Qonaq tokeni daxili saxlanılır — istifadəçi "Skip" desə dərhal hazırdır.
         let _ = slint::invoke_from_event_loop({
             let weak = weak.clone();
             move || {
@@ -436,6 +450,13 @@ fn spawn_boot(core: Arc<Core>, weak: Weak<AppWindow>) {
                 }
             }
         });
+
+        if token_invalid {
+            toast(&weak, "Session expired — please sign in");
+        }
+
+        // Model siyahısını arxa planda qızdır (birinci istifadə üçün)
+        spawn_load_models(core, weak);
     });
 }
 
@@ -451,7 +472,7 @@ fn current_model(core: &Core) -> (String, String, usize) {
     if let Some(m) = models.get(idx) {
         (m.id.clone(), m.name.clone(), idx)
     } else {
-        ("x-preview-l".into(), "GLM-5.3-Flash".into(), 0)
+        ("glm-5.3-flash".into(), "GLM-5.3-Flash".into(), 0)
     }
 }
 
@@ -472,28 +493,62 @@ fn effort_string(core: &Core) -> String {
 
 fn collect_history(msgs: &[RawMsg]) -> Vec<(String, String)> {
     msgs.iter()
-        .filter(|m| !m.error && !m.text.is_empty() && m.role != "streaming")
+        .filter(|m| !m.error && !m.text.is_empty())
         .map(|m| (m.role.clone(), m.text.clone()))
         .collect()
 }
 
-fn spawn_send(core: Arc<Core>, weak: Weak<AppWindow>, prompt: String) {
+/// composer-dəki əlavələri UI-da göstər (upload statusları ilə)
+fn refresh_attachment_ui(core: &Core, weak: &Weak<AppWindow>) {
+    let uploads = l(&core.uploads).clone();
+    let states = l(&core.upload_state).clone();
+    let _ = slint::invoke_from_event_loop({
+        let weak = weak.clone();
+        move || {
+            if let Some(app) = weak.upgrade() {
+                let g = app.global::<App>();
+                let vm: Rc<slint::VecModel<Attachment>> = Rc::new(slint::VecModel::default());
+                for f in &uploads {
+                    let status = states
+                        .iter()
+                        .find(|(n, _)| n == &f.name)
+                        .map(|(_, s)| *s)
+                        .unwrap_or(1);
+                    vm.push(Attachment {
+                        id: f.id.clone().into(),
+                        name: f.name.clone().into(),
+                        media: f.media.clone().into(),
+                        status,
+                        size: api::human_size(f.size).into(),
+                    });
+                }
+                g.set_attachments(vm.into());
+            }
+        }
+    });
+}
+
+fn spawn_send(core: Arc<Core>, weak: Weak<AppWindow>, prompt: String, files: Vec<UploadedFile>) {
     // İşı göstər
     {
         let um = RawMsg {
             id: api::gen_uuid(),
             role: "user".into(),
             text: prompt.clone(),
+            files: files.clone(),
             streaming: false,
             error: false,
+            retrying: false,
             stamp: now_hm(),
         };
         let am = RawMsg {
             id: api::gen_uuid(),
             role: "assistant".into(),
             text: String::new(),
+            files: Vec::new(),
             streaming: true,
             error: false,
+            retrying: false,
             stamp: now_hm(),
         };
         l(&core.messages).push(um);
@@ -507,20 +562,19 @@ fn spawn_send(core: Arc<Core>, weak: Weak<AppWindow>, prompt: String) {
     *l(&core.current_job) = Some(job.clone());
 
     std::thread::spawn(move || {
-        let result = run_send(&core, &weak, &prompt, &job);
+        let result = run_send(&core, &weak, &prompt, &files, &job);
         match result {
             Ok(()) => {}
             Err(e) if e == "CAPTCHA" => {
                 finish_stream(&core, &weak, true,
-                    "Server requires captcha verification for this network.\nSign in with your account (Sign in) or paste your account token — then try again.");
-                banner(&weak, "Captcha required — sign in with your account to continue");
+                    "Server requires verification for this network.\nSign in with your account (Sign in) and try again.");
+                banner(&weak, "Verification required — sign in with your account to continue");
             }
             Err(e) if e == "UNAUTHORIZED" => {
                 // qonaq tokeni vaxtı bitib — yenilə və bir dəfə təkrar cəhd et
                 if l(&core.persisted).is_guest {
                     if let Ok(a) = core.client.guest_auth() {
                         apply_auth(&core, &weak, &a);
-                        // sonuncu boş assistant mesajını sıfırla
                         {
                             let mut msgs = l(&core.messages);
                             if let Some(last) = msgs.last_mut() {
@@ -530,11 +584,10 @@ fn spawn_send(core: Arc<Core>, weak: Weak<AppWindow>, prompt: String) {
                             }
                         }
                         set_streaming(&core, &weak, true);
-                        let _ = run_send(&core, &weak, &prompt, &job);
+                        let _ = run_send(&core, &weak, &prompt, &files, &job);
                         return;
                     }
                 } else {
-                    // istifadəçi tokeni etibarsız — qonağa düş
                     if let Ok(a) = core.client.guest_auth() {
                         apply_auth(&core, &weak, &a);
                         toast(&weak, "Session expired — signed in as guest");
@@ -543,17 +596,69 @@ fn spawn_send(core: Arc<Core>, weak: Weak<AppWindow>, prompt: String) {
                 finish_stream(&core, &weak, true, "Session expired. Please sign in again.");
             }
             Err(e) => {
-                finish_stream(&core, &weak, true, &e);
+                // AVTOMATİK YENİDƏN GÖNDƏRMƏ: fayllar saxlanılır, mesaj təkrarlanır
+                if stream::is_retryable_error(&e) {
+                    mark_retrying(&core, &weak, true, &stream::clean_error(&e));
+                    let mut delay = 2500u64;
+                    for attempt in 0..3 {
+                        std::thread::sleep(Duration::from_millis(delay));
+                        if job.is_stopped() {
+                            break;
+                        }
+                        // sonuncu assistant mesajını sıfırla
+                        {
+                            let mut msgs = l(&core.messages);
+                            if let Some(last) = msgs.last_mut() {
+                                last.text.clear();
+                                last.streaming = true;
+                                last.error = false;
+                                last.retrying = false;
+                            }
+                        }
+                        set_streaming(&core, &weak, true);
+                        match run_send(&core, &weak, &prompt, &files, &job) {
+                            Ok(()) => return,
+                            Err(e2) if e2 == "CAPTCHA" || e2 == "UNAUTHORIZED" => {
+                                finish_stream(&core, &weak, true, &stream::clean_error(&e2));
+                                return;
+                            }
+                            Err(e2) => {
+                                mark_retrying(&core, &weak, true, &stream::clean_error(&e2));
+                                delay = (delay * 2).min(15000);
+                                let _ = attempt;
+                                continue;
+                            }
+                        }
+                    }
+                    finish_stream(&core, &weak, true, "Could not send after several retries. Tap to retry manually.");
+                } else {
+                    finish_stream(&core, &weak, true, &e);
+                }
             }
         }
     });
 }
 
-fn run_send(core: &Arc<Core>, weak: &Weak<AppWindow>, prompt: &str, job: &Arc<Job>) -> Result<(), String> {
+/// Son mesajı «avtomatik yenidən cəhd» vəziyyətinə sal
+fn mark_retrying(core: &Core, weak: &Weak<AppWindow>, on: bool, msg: &str) {
+    {
+        let mut msgs = l(&core.messages);
+        if let Some(last) = msgs.last_mut() {
+            last.retrying = on;
+            last.error = true;
+            last.streaming = false;
+            if !msg.is_empty() {
+                last.text = msg.to_string();
+            }
+        }
+    }
+    push_all_messages(core, weak);
+}
+
+fn run_send(core: &Arc<Core>, weak: &Weak<AppWindow>, prompt: &str, files: &[UploadedFile], job: &Arc<Job>) -> Result<(), String> {
     // Axın zamanı gələn user/assistant mesajları (yeni göndəriş üçün)
     let history: Vec<(String, String)> = {
         let msgs = l(&core.messages);
-        // sonuncu assistant (boş placeholder) və sonuncu user mesajını çıxart
         let mut h = collect_history(&msgs);
         if h.len() >= 2 {
             h.truncate(h.len() - 2);
@@ -625,6 +730,7 @@ fn run_send(core: &Arc<Core>, weak: &Weak<AppWindow>, prompt: &str, job: &Arc<Jo
         &user_msg_id,
         &assistant_msg_id,
         is_first,
+        files,
         job,
         &mut emit,
     );
@@ -681,6 +787,33 @@ fn content_to_text(c: &Value) -> String {
     }
 }
 
+fn content_to_files(c: &Value) -> Vec<UploadedFile> {
+    let mut out = Vec::new();
+    if let Value::Array(arr) = c {
+        for p in arr {
+            let t = p["type"].as_str().unwrap_or("");
+            let media = match t {
+                "image_url" => "image",
+                "video_url" => "video",
+                "file_url" => "doc",
+                _ => continue,
+            };
+            let url = p[t]["url"].as_str().unwrap_or("").to_string();
+            if url.is_empty() {
+                continue;
+            }
+            out.push(UploadedFile {
+                id: url.clone(),
+                name: if media == "image" { "Image".into() } else if media == "video" { "Video".into() } else { "File".into() },
+                media: media.into(),
+                size: 0,
+                direct_url: String::new(),
+            });
+        }
+    }
+    out
+}
+
 fn spawn_open_conversation(core: Arc<Core>, weak: Weak<AppWindow>, id: String) {
     toast(&weak, "Loading chat…");
     std::thread::spawn(move || {
@@ -715,6 +848,7 @@ fn spawn_open_conversation(core: Arc<Core>, weak: Weak<AppWindow>, id: String) {
                     if text.is_empty() {
                         continue;
                     }
+                    let files = if role == "user" { content_to_files(&m["content"]) } else { Vec::new() };
                     let ts = m["timestamp"].as_i64().unwrap_or(0);
                     let stamp = chrono::DateTime::from_timestamp(ts, 0)
                         .map(|t| t.with_timezone(&chrono::Local).format("%H:%M").to_string())
@@ -723,8 +857,10 @@ fn spawn_open_conversation(core: Arc<Core>, weak: Weak<AppWindow>, id: String) {
                         id: m["id"].as_str().unwrap_or("").to_string(),
                         role,
                         text,
+                        files,
                         streaming: false,
                         error: false,
+                        retrying: false,
                         stamp,
                     });
                 }
@@ -753,6 +889,134 @@ fn spawn_open_conversation(core: Arc<Core>, weak: Weak<AppWindow>, id: String) {
     });
 }
 
+// ---------------- Fayl seçici + upload ----------------
+
+fn spawn_open_picker(core: Arc<Core>, weak: Weak<AppWindow>) {
+    if l(&core.persisted).is_guest {
+        toast(&weak, "Sign in to attach files");
+        return;
+    }
+    let _ = slint::invoke_from_event_loop({
+        let weak = weak.clone();
+        move || {
+            if let Some(app) = weak.upgrade() {
+                app.global::<App>().set_picker_loading(true);
+                app.global::<App>().set_picker_files(Rc::new(slint::VecModel::<PickedFile>::default()).into());
+                app.global::<App>().set_picker_open(true);
+            }
+        }
+    });
+    std::thread::spawn(move || {
+        // icazə istə (ilk dəfə) + siyahı
+        picker::request_storage_permission();
+        let files: Vec<MediaFile> = picker::query_media_files(40);
+        let items: Vec<PickedFile> = files
+            .iter()
+            .map(|f| PickedFile {
+                id: f.id as i32,
+                name: f.name.clone().into(),
+                media: f.media.clone().into(),
+                size: api::human_size(f.size).into(),
+                uri: f.uri.clone().into(),
+            })
+            .collect();
+        let _ = slint::invoke_from_event_loop({
+            let weak = weak.clone();
+            move || {
+                if let Some(app) = weak.upgrade() {
+                    let g = app.global::<App>();
+                    let vm: Rc<slint::VecModel<PickedFile>> = Rc::new(slint::VecModel::default());
+                    for it in items {
+                        vm.push(it);
+                    }
+                    g.set_picker_files(vm.into());
+                    g.set_picker_loading(false);
+                }
+            }
+        });
+    });
+}
+
+fn spawn_pick_file(core: Arc<Core>, weak: Weak<AppWindow>, uri: String) {
+    // seçici bağla
+    let _ = slint::invoke_from_event_loop({
+        let weak = weak.clone();
+        move || {
+            if let Some(app) = weak.upgrade() {
+                app.global::<App>().set_picker_open(false);
+            }
+        }
+    });
+    std::thread::spawn(move || {
+        let token = l(&core.persisted).token.clone();
+        // 1) oxu
+        let (bytes, name, mime) = match picker::read_uri_bytes(&uri) {
+            Ok(v) => v,
+            Err(e) => {
+                toast(&weak, &format!("Could not read file: {}", e));
+                return;
+            }
+        };
+        if bytes.is_empty() {
+            toast(&weak, "File is empty");
+            return;
+        }
+        if bytes.len() > 60 * 1024 * 1024 {
+            toast(&weak, "File too large (max 60 MB)");
+            return;
+        }
+        // 2) upload — statusu «yüklənir» kimi göstər
+        {
+            let mut st = l(&core.upload_state);
+            st.push((name.clone(), 0));
+        }
+        refresh_attachment_ui(&core, &weak);
+        match core.client.upload_file(&token, &bytes, &name, &mime) {
+            Ok(mut up) => {
+                if up.name.is_empty() || up.name == "file" {
+                    up.name = name.clone();
+                }
+                {
+                    let mut ups = l(&core.uploads);
+                    ups.push(up);
+                    let mut st = l(&core.upload_state);
+                    for s in st.iter_mut() {
+                        if s.0 == name {
+                            s.1 = 1;
+                        }
+                    }
+                }
+                refresh_attachment_ui(&core, &weak);
+                toast(&weak, "Attached");
+            }
+            Err(e) => {
+                {
+                    let mut st = l(&core.upload_state);
+                    for s in st.iter_mut() {
+                        if s.0 == name {
+                            s.1 = 2;
+                        }
+                    }
+                }
+                refresh_attachment_ui(&core, &weak);
+                toast(&weak, &format!("Upload failed: {}", e));
+                // xətalı əlavəni təmizlə
+                std::thread::sleep(Duration::from_millis(1800));
+                {
+                    let mut ups = l(&core.uploads);
+                    let mut st = l(&core.upload_state);
+                    let idx = st.iter().position(|(n, _)| n == &name);
+                    if let Some(i) = idx {
+                        st.remove(i);
+                    }
+                    ups.retain(|u| u.name != name);
+                }
+                refresh_attachment_ui(&core, &weak);
+            }
+        }
+    });
+}
+
 // ---------------- Kök init ----------------
 
 pub fn run() {
@@ -764,19 +1028,24 @@ pub fn run() {
     {
         let g = app.global::<App>();
 
-        // send
+        // send (əlavələrlə birlikdə)
         let core_c = core.clone();
         let weak_c = weak.clone();
         g.on_send(move |text| {
             let t = text.trim().to_string();
-            if t.is_empty() {
+            let files = l(&core_c.uploads).clone();
+            if t.is_empty() && files.is_empty() {
                 return;
             }
             let app = weak_c.upgrade().unwrap();
             let g = app.global::<App>();
             g.set_input_text("".into());
             g.set_auto_scroll(true);
-            spawn_send(core_c.clone(), weak_c.clone(), t);
+            // əlavələri göndərişə bağla, composer-i təmizlə
+            *l(&core_c.uploads) = Vec::new();
+            *l(&core_c.upload_state) = Vec::new();
+            g.set_attachments(Rc::new(slint::VecModel::<Attachment>::default()).into());
+            spawn_send(core_c.clone(), weak_c.clone(), t, files);
         });
 
         // stop
@@ -791,7 +1060,7 @@ pub fn run() {
         let core_c = core.clone();
         let weak_c = weak.clone();
         g.on_regenerate(move || {
-            // son assistant mesajını sil, son user mətnini yenidən göndər
+            // son assistant mesajını sil, son user mətnini + fayllarını yenidən göndər
             let prompt = {
                 let mut msgs = l(&core_c.messages);
                 while let Some(last) = msgs.last() {
@@ -801,13 +1070,28 @@ pub fn run() {
                         break;
                     }
                 }
-                let p = msgs.last().filter(|m| m.role == "user").map(|m| m.text.clone());
+                let p = msgs.last().filter(|m| m.role == "user").map(|m| (m.text.clone(), m.files.clone()));
                 drop(msgs);
                 p
             };
-            if let Some(p) = prompt {
+            if let Some((p, files)) = prompt {
                 push_all_messages(&core_c, &weak_c);
-                spawn_send(core_c.clone(), weak_c.clone(), p);
+                spawn_send(core_c.clone(), weak_c.clone(), p, files);
+            }
+        });
+
+        // retry-send (xəta sonrası əl ilə)
+        let core_c = core.clone();
+        let weak_c = weak.clone();
+        g.on_retry_send(move || {
+            let prompt = {
+                let msgs = l(&core_c.messages);
+                msgs.last()
+                    .filter(|m| m.role == "user")
+                    .map(|m| (m.text.clone(), m.files.clone()))
+            };
+            if let Some((p, files)) = prompt {
+                spawn_send(core_c.clone(), weak_c.clone(), p, files);
             }
         });
 
@@ -856,14 +1140,14 @@ pub fn run() {
             spawn_load_conversations(core_c.clone(), weak_c.clone());
         });
 
-        // sign in (email)
+        // sign in (email + şifrə — adi hesab girişi)
         let core_c = core.clone();
         let weak_c = weak.clone();
         g.on_do_sign_in(move |email, password| {
             let app = weak_c.upgrade().unwrap();
             let g = app.global::<App>();
-            g.set_signin_busy(true);
-            g.set_signin_error("".into());
+            g.set_login_busy(true);
+            g.set_login_error("".into());
             let email_s = email.to_string();
             let pass_s = password.to_string();
             let core_cc = core_c.clone();
@@ -878,32 +1162,46 @@ pub fn run() {
                         spawn_load_conversations(core_cc, weak_cc);
                     }
                     Err(e) if e == "CAPTCHA_REQUIRED" => {
-                        let app = weak_cc.upgrade().unwrap();
-            let g = app.global::<App>();
-                        g.set_signin_busy(false);
-                        g.set_signin_error(
-                            "This network requires captcha. Open chat.z.ai in your phone browser, sign in there, then paste your token (second tab).".into(),
-                        );
+                        // captcha lazımdır → fallback ekranı (brauzer + token)
+                        let _ = slint::invoke_from_event_loop({
+                            let weak = weak_cc.clone();
+                            move || {
+                                if let Some(app) = weak.upgrade() {
+                                    let g = app.global::<App>();
+                                    g.set_login_busy(false);
+                                    g.set_login_error(
+                                        "Z.ai requires slide verification for sign-in from this app. Complete it once in your browser, then come back.".into(),
+                                    );
+                                    g.set_login_step(2);
+                                }
+                            }
+                        });
                     }
                     Err(e) => {
-                        let app = weak_cc.upgrade().unwrap();
-            let g = app.global::<App>();
-                        g.set_signin_busy(false);
-                        g.set_signin_error(e.into());
+                        let _ = slint::invoke_from_event_loop({
+                            let weak = weak_cc.clone();
+                            move || {
+                                if let Some(app) = weak.upgrade() {
+                                    let g = app.global::<App>();
+                                    g.set_login_busy(false);
+                                    g.set_login_error(e.into());
+                                }
+                            }
+                        });
                     }
                 }
             });
         });
 
-        // sign in (token)
+        // token ilə giriş (clipboard / əl ilə)
         let core_c = core.clone();
         let weak_c = weak.clone();
         g.on_do_token_sign_in(move |token| {
             let app = weak_c.upgrade().unwrap();
             let g = app.global::<App>();
-            g.set_signin_busy(true);
-            g.set_signin_error("".into());
-            let token_s = token.to_string();
+            g.set_login_busy(true);
+            g.set_login_error("".into());
+            let token_s = token.trim().to_string();
             let core_cc = core_c.clone();
             let weak_cc = weak_c.clone();
             std::thread::spawn(move || match core_cc.client.verify_token(&token_s) {
@@ -915,34 +1213,111 @@ pub fn run() {
                     spawn_load_conversations(core_cc, weak_cc);
                 }
                 Err(_) => {
-                    let app = weak_cc.upgrade().unwrap();
-            let g = app.global::<App>();
-                    g.set_signin_busy(false);
-                    g.set_signin_error("Token is invalid or expired.".into());
+                    let _ = slint::invoke_from_event_loop({
+                        let weak = weak_cc.clone();
+                        move || {
+                            if let Some(app) = weak.upgrade() {
+                                let g = app.global::<App>();
+                                g.set_login_busy(false);
+                                g.set_login_error("Token is invalid or expired.".into());
+                            }
+                        }
+                    });
                 }
             });
         });
 
-        // guest
+        // clipboard token yoxlaması
+        let core_c = core.clone();
+        let weak_c = weak.clone();
+        g.on_check_clipboard_token(move || {
+            let clip = picker::read_clipboard_text().unwrap_or_default();
+            let clip = clip.trim().to_string();
+            if clip.starts_with("eyJ") && clip.len() > 60 {
+                let clip2 = clip.clone();
+                let _ = slint::invoke_from_event_loop({
+                    let weak = weak_c.clone();
+                    move || {
+                        if let Some(app) = weak.upgrade() {
+                            let g = app.global::<App>();
+                            g.set_token_auto_detected(true);
+                            g.set_token_input(clip2.into());
+                            g.set_login_busy(true);
+                        }
+                    }
+                });
+                // avtomatik yoxla
+                let core_cc = core_c.clone();
+                let weak_cc = weak_c.clone();
+                std::thread::spawn(move || {
+                    match core_cc.client.verify_token(&clip) {
+                        Ok(a) => {
+                            apply_auth(&core_cc, &weak_cc, &a);
+                            toast(&weak_cc, &format!("Welcome, {}", a.user_name));
+                            *l(&core_cc.chat_id) = String::new();
+                            spawn_load_models(core_cc.clone(), weak_cc.clone());
+                            spawn_load_conversations(core_cc, weak_cc);
+                        }
+                        Err(_) => {
+                            let _ = slint::invoke_from_event_loop({
+                                let weak = weak_cc.clone();
+                                move || {
+                                    if let Some(app) = weak.upgrade() {
+                                        let g = app.global::<App>();
+                                        g.set_login_busy(false);
+                                        g.set_token_auto_detected(false);
+                                        g.set_login_error("Clipboard token is invalid — copy it again from the site.".into());
+                                    }
+                                }
+                            });
+                        }
+                    }
+                });
+            } else {
+                let _ = slint::invoke_from_event_loop({
+                    let weak = weak_c.clone();
+                    move || {
+                        if let Some(app) = weak.upgrade() {
+                            let g = app.global::<App>();
+                            g.set_login_error("No token in clipboard. Copy the 'token' value from chat.z.ai first.".into());
+                        }
+                    }
+                });
+            }
+        });
+
+        // qonaq kimi davam
         let core_c = core.clone();
         let weak_c = weak.clone();
         g.on_continue_as_guest(move || {
             let app = weak_c.upgrade().unwrap();
             let g = app.global::<App>();
-            g.set_signin_busy(true);
+            g.set_login_busy(true);
             let core_cc = core_c.clone();
             let weak_cc = weak_c.clone();
-            std::thread::spawn(move || match core_cc.client.guest_auth() {
-                Ok(a) => {
-                    apply_auth(&core_cc, &weak_cc, &a);
-                    toast(&weak_cc, "Continuing as guest");
-                    spawn_load_models(core_cc, weak_cc);
-                }
-                Err(e) => {
-                    let app = weak_cc.upgrade().unwrap();
-            let g = app.global::<App>();
-                    g.set_signin_busy(false);
-                    g.set_signin_error(e.into());
+            std::thread::spawn(move || {
+                // artıq boot zamanı qonaq tokeni alınıb — yoxla, yoxdursa al
+                let has_token = !l(&core_cc.persisted).token.is_empty();
+                if has_token {
+                    apply_auth_guest(&core_cc, &weak_cc);
+                } else {
+                    match core_cc.client.guest_auth() {
+                        Ok(a) => {
+                            apply_auth(&core_cc, &weak_cc, &a);
+                            toast(&weak_cc, "Continuing as guest");
+                        }
+                        Err(e) => {
+                            let _ = slint::invoke_from_event_loop({
+                                let weak = weak_cc.clone();
+                                move || {
+                                    if let Some(app) = weak.upgrade() {
+                                        app.global::<App>().set_login_busy(false);
+                                        app.global::<App>().set_login_error(e.into());
+                                    }
+                                }
+                            });
+                        }
+                    }
                 }
             });
         });
@@ -979,12 +1354,49 @@ pub fn run() {
                             g.set_messages(empty.into());
                             let econv: Rc<slint::VecModel<ConvItem>> = Rc::new(slint::VecModel::default());
                             g.set_conversations(econv.into());
+                            // login ekranına qayıt
+                            g.set_authed(false);
+                            g.set_login_step(0);
+                            g.set_login_error("".into());
                         }
                     }
                 });
                 spawn_load_models(core_cc.clone(), weak_cc.clone());
                 toast(&weak_cc, "Signed out");
             });
+        });
+
+        // brauzer aç
+        g.on_open_browser(move |url| {
+            picker::open_url(&url);
+        });
+
+        // fayl seçici
+        let core_c = core.clone();
+        let weak_c = weak.clone();
+        g.on_open_picker(move || {
+            spawn_open_picker(core_c.clone(), weak_c.clone());
+        });
+        g.on_close_picker(move || {});
+
+        let core_c = core.clone();
+        let weak_c = weak.clone();
+        g.on_pick_file(move |uri| {
+            spawn_pick_file(core_c.clone(), weak_c.clone(), uri.to_string());
+        });
+
+        // əlavəni sil
+        let core_c = core.clone();
+        g.on_remove_attachment(move |idx| {
+            let i = idx.max(0) as usize;
+            let mut ups = l(&core_c.uploads);
+            let mut st = l(&core_c.upload_state);
+            if i < ups.len() {
+                ups.remove(i);
+            }
+            if i < st.len() {
+                st.remove(i);
+            }
         });
 
         // model seçimi
@@ -1003,14 +1415,12 @@ pub fn run() {
                     store::save(&p);
                 }
                 let labels = effort_labels_of(m);
-                let name = m.name.clone();
                 let app = weak_c.upgrade().unwrap();
                 let g = app.global::<App>();
                 g.set_model_index(idx);
                 g.set_effort(2.min(labels.len().saturating_sub(1) as i32));
                 apply_effort_labels(&g, &labels);
                 g.set_model_popup_open(false);
-                let _ = name;
             }
         });
 
@@ -1050,6 +1460,63 @@ pub fn run() {
         });
     }
 
+    // ---- clipboard avtomatik aşkarlama: app önə gələndə (yumuşaq poll) ----
+    {
+        let weak_cp = weak.clone();
+        std::thread::spawn(move || {
+            let mut last_clip = String::new();
+            loop {
+                std::thread::sleep(Duration::from_secs(3));
+                // yalnız login gözləyəndə lazımdır
+                let cell: Arc<Mutex<Option<(bool, i32, bool)>>> = Arc::new(Mutex::new(None));
+                let cell2 = cell.clone();
+                let weak_poll = weak_cp.clone();
+                let ok = slint::invoke_from_event_loop(move || {
+                    if let Some(app) = weak_poll.upgrade() {
+                        let g = app.global::<App>();
+                        *cell2.lock().unwrap() = Some((g.get_authed(), g.get_login_step(), g.get_login_busy()));
+                    }
+                })
+                .is_ok();
+                if !ok {
+                    continue;
+                }
+                let state = match cell.lock() {
+                    Ok(g) => g,
+                    Err(e) => e.into_inner(),
+                };
+                let (authed, step, busy) = match *state {
+                    Some(v) => v,
+                    None => continue,
+                };
+                drop(state);
+                if authed || busy || step != 2 {
+                    continue;
+                }
+                if let Some(clip) = picker::read_clipboard_text() {
+                    let clip = clip.trim().to_string();
+                    if clip != last_clip && clip.starts_with("eyJ") && clip.len() > 60 {
+                        last_clip = clip.clone();
+                        // tapıldı — istifadəçiyə göstər (avtomatik yoxla)
+                        let _ = slint::invoke_from_event_loop({
+                            let weak = weak_cp.clone();
+                            let clip = clip.clone();
+                            move || {
+                                if let Some(app) = weak.upgrade() {
+                                    let g = app.global::<App>();
+                                    g.set_token_auto_detected(true);
+                                    g.set_token_input(clip.clone().into());
+                                    g.set_login_busy(true);
+                                    g.invoke_do_token_sign_in(clip.into());
+                                }
+                            }
+                        });
+                    }
+                }
+            }
+        });
+    }
+
     // ---- boot ----
     spawn_boot(core.clone(), weak.clone());
 
@@ -1058,7 +1525,6 @@ pub fn run() {
         let core_c = core.clone();
         let weak_c = weak.clone();
         std::thread::spawn(move || {
-            // boot bitənə qədər gözlə
             for _ in 0..60 {
                 if *l(&core_c.boot_done) {
                     break;
@@ -1072,6 +1538,7 @@ pub fn run() {
                 move || {
                     if let Some(app) = weak.upgrade() {
                         let g = app.global::<App>();
+                        g.set_authed(true);
                         g.invoke_send(msg.into());
                     }
                 }
@@ -1080,4 +1547,20 @@ pub fn run() {
     }
 
     app.run().expect("Hadisə dövrəsi xətası");
+}
+
+/// Qonaq kimi davam: saxlanmış qonaq tokeni varsa UI-ı birbaşa aç
+fn apply_auth_guest(core: &Core, weak: &Weak<AppWindow>) {
+    let _ = slint::invoke_from_event_loop({
+        let weak = weak.clone();
+        move || {
+            if let Some(app) = weak.upgrade() {
+                let g = app.global::<App>();
+                g.set_authed(true);
+                g.set_login_busy(false);
+                g.set_login_error("".into());
+            }
+        }
+    });
+    let _ = core;
 }

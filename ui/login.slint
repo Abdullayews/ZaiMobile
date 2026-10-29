@@ -1,0 +1,535 @@
+// ============================================================
+//  Login səhifəsi — chat.z.ai/auth-nun native replikası
+//  Addım 0: Welcome (Google / Email / Github / Skip)
+//  Addım 1: Email + şifrə formu
+//  Addım 2: Captcha fallback (brauzer + token)
+//  Addım 3: Token paste (əlavə yol)
+// ============================================================
+
+import { Theme } from "theme.slint";
+import { App } from "state.slint";
+import { IconMail, IconKey, IconAlert, IconArrowLeft, IconCheck, IconClipboard, IconUser } from "icons.slint";
+import { IconGoogle, IconGithub } from "icons.slint";
+import { Spinner } from "std-widgets.slint";
+
+
+// ---------- Giriş kartının daxili hissəsi (logo + başlıq) ----------
+
+component AuthHeader inherits VerticalLayout {
+    padding-top: 8px;
+    padding-bottom: 8px;
+    spacing: 14px;
+
+    Image {
+        source: @image-url("../assets/logo.png");
+        width: 56px; height: 56px;
+        horizontal-alignment: center;
+    }
+    Text {
+        text: "Sign in to Z.ai";
+        font-size: 22px;
+        font-weight: 700;
+        color: Theme.text;
+        font-family: Theme.font-body;
+        horizontal-alignment: center;
+    }
+    Text {
+        text: "Welcome back — use your Z.ai account";
+        font-size: 13px;
+        color: Theme.text-2;
+        font-family: Theme.font-body;
+        horizontal-alignment: center;
+    }
+}
+
+// ---------- Mətn sahəsi ----------
+
+component LoginField inherits Rectangle {
+    in property <string> placeholder;
+    in property <string> secret;
+    in property <bool> is-password;
+    in-out property <string> value;
+    in property <bool> show-plain;
+    height: 46px;
+    background: Theme.surface-2;
+    border-width: 1px;
+    border-radius: 8px;
+    border-color: field.has-focus ? Theme.text-2 : Theme.border;
+
+    field := TextInput {
+        x: 14px; y: 0;
+        width: parent.width - 28px;
+        height: parent.height;
+        vertical-alignment: center;
+        font-size: 15px;
+        font-family: Theme.font-body;
+        color: Theme.text;
+        wrap: no-wrap;
+        input-type: root.is-password && !root.show-plain ? InputType.password : InputType.text;
+        text <=> root.value;
+    }
+    if root.value == "" : Text {
+        x: 14px; y: 0;
+        height: parent.height;
+        text: root.placeholder;
+        color: Theme.placeholder;
+        font-size: 15px;
+        font-family: Theme.font-body;
+        vertical-alignment: center;
+    }
+}
+
+// ---------- Əsas düymə ----------
+
+component PrimaryButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> busy;
+    callback clicked();
+    height: 46px;
+    border-radius: Theme.btn-r;
+    background: root.busy ? Theme.subtle : (ta.has-hover ? Theme.btn-dark-hov : Theme.btn-dark);
+    ta := TouchArea {
+        clicked => { if (!root.busy) { root.clicked(); } }
+        Text {
+            text: root.busy ? "Please wait…" : root.label;
+            color: Theme.btn-text;
+            font-size: 15px;
+            font-weight: 700;
+            font-family: Theme.font-body;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// ---------- Sosial düymələr (veb kimi: ikon + mətn) ----------
+
+component SocialButton inherits Rectangle {
+    in property <string> label;
+    callback clicked();
+    height: 46px;
+    border-radius: Theme.btn-r;
+    border-width: 1px;
+    border-color: Theme.border;
+    background: ta.has-hover ? Theme.hover : transparent;
+    ta := TouchArea {
+        clicked => { root.clicked(); }
+        HorizontalLayout {
+            alignment: center;
+            spacing: 10px;
+            @children
+            Text {
+                text: root.label;
+                color: Theme.text;
+                font-size: 14px;
+                font-weight: 500;
+                font-family: Theme.font-body;
+                vertical-alignment: center;
+            }
+        }
+    }
+}
+
+// ============================================================
+//  LOGIN SƏHİFƏSİ
+// ============================================================
+
+export component LoginScreen inherits Rectangle {
+    background: Theme.page;
+
+    Rectangle {
+        y: 0;
+        height: parent.height;
+        width: parent.width;
+
+        // scroll edilə bilən məzmun
+        Flickable {
+            x: 0; y: 0;
+            width: parent.width;
+            height: parent.height;
+
+            content-height: col.preferred-height + 48px;
+
+            col := VerticalLayout {
+                x: 0;
+                width: parent.width;
+                padding-left: 28px;
+                padding-right: 28px;
+                padding-top: 48px;
+                padding-bottom: 24px;
+                spacing: 14px;
+
+                // ============ ADDIM 0: Welcome ============
+                if App.login-step == 0 : VerticalLayout {
+                    spacing: 14px;
+
+                    AuthHeader { }
+
+                    Rectangle { height: 10px; }
+
+                    // Google
+                    SocialButton {
+                        label: "Continue with Google";
+                        clicked => {
+                            // vebdə OAuth pəncərəsi açılır; native-də sistem brauzeri
+                            App.login-step = 2;   // captcha fallback yoluna yönəlt (OAuth da brauzerdə işləyir)
+                            App.open-browser("https://chat.z.ai/auth");
+                        }
+                        IconGoogle { width: 18px; height: 18px; }
+                    }
+                    // Email (əsas yol — native form)
+                    SocialButton {
+                        label: "Continue with Email";
+                        clicked => { App.login-step = 1; App.login-error = ""; }
+                        IconMail { width: 18px; height: 18px; stroke: Theme.text-2; stroke-width: 1.6px; }
+                    }
+                    // Github
+                    SocialButton {
+                        label: "Continue with Github";
+                        clicked => {
+                            App.login-step = 2;
+                            App.open-browser("https://chat.z.ai/auth");
+                        }
+                        IconGithub { width: 18px; height: 18px; }
+                    }
+
+                    Rectangle { height: 6px; }
+
+                    // ayırıcı
+                    HorizontalLayout {
+                        spacing: 10px;
+                        alignment: center;
+                        Rectangle { height: 1px; background: Theme.border; width: 90px; y: 10px; }
+                        Text { text: "or"; color: Theme.text-3; font-size: 12px; vertical-alignment: center; }
+                        Rectangle { height: 1px; background: Theme.border; width: 90px; y: 10px; }
+                    }
+
+                    // qonaq kimi davam
+                    Rectangle {
+                        height: 46px;
+                        border-radius: Theme.btn-r;
+                        background: gst.has-hover ? Theme.hover : transparent;
+                        gst := TouchArea {
+                            clicked => { App.continue-as-guest(); }
+                            Text {
+                                text: "Skip for now";
+                                color: Theme.text-2;
+                                font-size: 14px;
+                                font-family: Theme.font-body;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    Text {
+                        text: "By using Z.ai you agree to our Terms of Service and Privacy Policy";
+                        font-size: 10px;
+                        color: Theme.text-3;
+                        font-family: Theme.font-body;
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                    }
+                }
+
+                // ============ ADDIM 1: Email + şifrə ============
+                if App.login-step == 1 : VerticalLayout {
+                    spacing: 12px;
+
+                    // geri düyməsi
+                    TouchArea {
+                        height: 40px;
+                        clicked => { App.login-step = 0; App.login-error = ""; }
+                        HorizontalLayout {
+                            spacing: 6px;
+                            alignment: start;
+                            IconArrowLeft { width: 18px; height: 18px; stroke: Theme.text-2; stroke-width: 2px; y: 11px; }
+                            Text {
+                                text: "Back";
+                                color: Theme.text-2;
+                                font-size: 14px;
+                                font-family: Theme.font-body;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    AuthHeader { }
+
+                    LoginField {
+                        placeholder: "Enter Your Email";
+                        value <=> App.email;
+                    }
+                    LoginField {
+                        placeholder: "Enter Your Password";
+                        is-password: true;
+                        show-plain: App.password-visible;
+                        value <=> App.password;
+                    }
+
+                    // şifrəni göstər / gizlət
+                    TouchArea {
+                        height: 28px;
+                        clicked => { App.password-visible = !App.password-visible; }
+                        Text {
+                            text: App.password-visible ? "Hide password" : "Show password";
+                            color: Theme.text-2;
+                            font-size: 12px;
+                            font-family: Theme.font-body;
+                            horizontal-alignment: center;
+                        }
+                    }
+
+                    if App.login-error != "" : HorizontalLayout {
+                        spacing: 6px;
+                        IconAlert { width: 14px; height: 14px; stroke: Theme.danger; stroke-width: 2px; y: 2px; }
+                        Text {
+                            text: App.login-error;
+                            color: Theme.danger;
+                            font-size: 13px;
+                            font-family: Theme.font-body;
+                            wrap: word-wrap;
+                        }
+                    }
+
+                    PrimaryButton {
+                        label: "Sign in";
+                        busy: App.login-busy;
+                        clicked => {
+                            if (App.email != "" && App.password != "") {
+                                App.do-sign-in(App.email, App.password);
+                            }
+                        }
+                    }
+
+                    // sign up → brauzer (saytda sign-up + email təsdiqi lazımdır)
+                    TouchArea {
+                        height: 36px;
+                        clicked => { App.open-browser("https://chat.z.ai/auth"); }
+                        Text {
+                            text: "Don't have an account? Sign up";
+                            color: Theme.accent;
+                            font-size: 13px;
+                            font-family: Theme.font-body;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                // ============ ADDIM 2: Captcha fallback ============
+                if App.login-step == 2 : VerticalLayout {
+                    spacing: 14px;
+
+                    AuthHeader { }
+
+                    // izah kartı
+                    Rectangle {
+                        background: Theme.surface;
+                        border-radius: 12px;
+                        border-width: 1px;
+                        border-color: Theme.border;
+                        height: expl.preferred-height + 40px;
+                        expl := VerticalLayout {
+                            padding: 20px;
+                            spacing: 10px;
+                            Text {
+                                text: "One-time security verification";
+                                font-size: 15px;
+                                font-weight: 700;
+                                color: Theme.text;
+                                font-family: Theme.font-body;
+                                wrap: word-wrap;
+                            }
+                            Text {
+                                text: "Z.ai asks for a slide verification (captcha) when signing in. It works in your browser:";
+                                font-size: 13px;
+                                color: Theme.text-2;
+                                font-family: Theme.font-body;
+                                wrap: word-wrap;
+                            }
+                            Text {
+                                text: "1. Tap 'Open chat.z.ai' and sign in there (email + password — the slide verification works in your browser)\n2. After signing in, copy your token: address bar 'chat.z.ai' → site menu → 'Token for the app' (or browser menu → Inspect → Application → Local Storage → token)\n3. Return here — the app will detect the token in your clipboard automatically";
+                                font-size: 12.5px;
+                                color: Theme.text-2;
+                                font-family: Theme.font-body;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+
+                    if App.token-auto-detected : HorizontalLayout {
+                        spacing: 8px;
+                        IconCheck { width: 16px; height: 16px; stroke: Theme.success; stroke-width: 2.4px; y: 1px; }
+                        Text {
+                            text: "Token detected in clipboard!";
+                            color: Theme.success;
+                            font-size: 13px;
+                            font-weight: 700;
+                            font-family: Theme.font-body;
+                        }
+                    }
+
+                    if App.login-error != "" : HorizontalLayout {
+                        spacing: 6px;
+                        IconAlert { width: 14px; height: 14px; stroke: Theme.danger; stroke-width: 2px; y: 2px; }
+                        Text {
+                            text: App.login-error;
+                            color: Theme.danger;
+                            font-size: 13px;
+                            font-family: Theme.font-body;
+                            wrap: word-wrap;
+                        }
+                    }
+
+                    PrimaryButton {
+                        label: "Open chat.z.ai";
+                        clicked => { App.open-browser("https://chat.z.ai/auth"); }
+                    }
+
+                    Rectangle {
+                        height: 44px;
+                        border-radius: Theme.btn-r;
+                        border-width: 1px;
+                        border-color: Theme.border;
+                        background: cb.has-hover ? Theme.hover : transparent;
+                        cb := TouchArea {
+                            clicked => { App.check-clipboard-token(); }
+                            Text {
+                                text: "I copied the token — check now";
+                                color: Theme.text;
+                                font-size: 14px;
+                                font-family: Theme.font-body;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // əl ilə token yapışdır
+                    TouchArea {
+                        height: 34px;
+                        clicked => { App.login-step = 3; }
+                        Text {
+                            text: "Paste token manually";
+                            color: Theme.text-2;
+                            font-size: 13px;
+                            font-family: Theme.font-body;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    // qonaq
+                    TouchArea {
+                        height: 34px;
+                        clicked => { App.continue-as-guest(); }
+                        Text {
+                            text: "Skip for now (guest)";
+                            color: Theme.text-3;
+                            font-size: 13px;
+                            font-family: Theme.font-body;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                // ============ ADDIM 3: Token paste ============
+                if App.login-step == 3 : VerticalLayout {
+                    spacing: 12px;
+
+                    TouchArea {
+                        height: 40px;
+                        clicked => { App.login-step = 2; }
+                        HorizontalLayout {
+                            spacing: 6px;
+                            alignment: start;
+                            IconArrowLeft { width: 18px; height: 18px; stroke: Theme.text-2; stroke-width: 2px; y: 11px; }
+                            Text {
+                                text: "Back";
+                                color: Theme.text-2;
+                                font-size: 14px;
+                                font-family: Theme.font-body;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    Text {
+                        text: "Account token";
+                        font-size: 18px;
+                        font-weight: 700;
+                        color: Theme.text;
+                        font-family: Theme.font-body;
+                    }
+
+                    tok := Rectangle {
+                        height: 96px;
+                        background: Theme.surface-2;
+                        border-width: 1px;
+                        border-radius: 8px;
+                        border-color: Theme.border;
+                        TextInput {
+                            x: 12px; y: 10px;
+                            width: parent.width - 24px;
+                            height: parent.height - 20px;
+                            text <=> App.token-input;
+                            font-size: 12px;
+                            font-family: Theme.font-mono;
+                            color: Theme.text;
+                            wrap: word-wrap;
+                        }
+                        if App.token-input == "" : Text {
+                            x: 12px; y: 10px;
+                            text: "eyJhbGciOi… (paste here)";
+                            color: Theme.placeholder;
+                            font-size: 12px;
+                            font-family: Theme.font-body;
+                        }
+                    }
+
+                    Text {
+                        text: "How to get the token:\n1. Open chat.z.ai in your phone browser and sign in\n2. Browser menu → 'Inspect'/'Debug' → Application → Local Storage\n3. Copy the 'token' value";
+                        color: Theme.text-2;
+                        font-size: 12px;
+                        font-family: Theme.font-body;
+                        wrap: word-wrap;
+                    }
+
+                    if App.login-error != "" : HorizontalLayout {
+                        spacing: 6px;
+                        IconAlert { width: 14px; height: 14px; stroke: Theme.danger; stroke-width: 2px; y: 2px; }
+                        Text {
+                            text: App.login-error;
+                            color: Theme.danger;
+                            font-size: 13px;
+                            font-family: Theme.font-body;
+                            wrap: word-wrap;
+                        }
+                    }
+
+                    PrimaryButton {
+                        label: "Continue with token";
+                        busy: App.login-busy;
+                        clicked => {
+                            if (App.token-input != "") {
+                                App.do-token-sign-in(App.token-input);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // busy overlay
+        if App.login-busy : Rectangle {
+            background: #66000000;
+            Spinner {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                indeterminate: true;
+            }
+        }
+    }
+}

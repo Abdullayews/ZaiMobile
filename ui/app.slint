@@ -5,21 +5,45 @@
 
 import { Theme } from "theme.slint";
 import { App } from "state.slint";
-export { App, ChatMessage, MessageBlock, ConvItem, ModelItem } from "state.slint";
+export { App, ChatMessage, MessageBlock, ConvItem, ModelItem, Attachment, PickedFile } from "state.slint";
 import { ChatScreen } from "chat.slint";
+import { LoginScreen } from "login.slint";
+import { Spinner } from "std-widgets.slint";
 import { Sidebar } from "sidebar.slint";
-import { SignInModal, ModelPopup, PhaseToast } from "modals.slint";
+import { ModelPopup, PhaseToast, FilePickerModal } from "modals.slint";
+
 
 export component AppWindow inherits Window {
     // Desktop preview ölçüsü (Android-də tam ekran bu dəyəri əvəz edir)
     width: 412px;
     height: 915px;
     background: Theme.page;
-    // Android: klaviatura pəncərəni yenidən ölçür (adjustResize manifestdə)
-    ChatScreen { }
 
+    // ---- Açılış splash (booting) ----
+    if App.booting : Rectangle {
+        background: Theme.page;
+        Image {
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2 - 40px;
+            source: @image-url("../assets/logo.png");
+            width: 72px; height: 72px;
+        }
+        Spinner {
+            x: (parent.width - self.width) / 2;
+            y: parent.height / 2 + 40px;
+            indeterminate: true;
+        }
+    }
+
+    // ---- Login (authed olmayana qədər) ----
+    if !App.authed && !App.booting : LoginScreen { }
+
+    // ---- Əsas chat ----
+    if App.authed && !App.booting : ChatScreen { }
+
+    // ---- Overlaylər ----
     if App.sidebar-open : Sidebar { }
     if App.model-popup-open : ModelPopup { }
-    if App.signin-open : SignInModal { }
+    if App.picker-open : FilePickerModal { }
     PhaseToast { }
 }

@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use std::time::Duration;
 
 pub const BASE: &str = "https://chat.z.ai";
-pub const FE_VERSION: &str = "prod-fe-1.1.122";
+pub const FE_VERSION: &str = "prod-fe-1.1.123";
 pub const MOBILE_UA: &str = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36";
 
 const SIGNATURE_KEY: &str = "key-@@@@)))()((9))-xxxx&&&%%%%%";
@@ -296,7 +296,10 @@ impl Client {
             if detail.contains("captcha") {
                 return Err("CAPTCHA_REQUIRED".into());
             }
-            return Err(format!("Sign-in failed: {}", if detail.is_empty() { "wrong email or password" } else { detail }));
+            if detail.is_empty() {
+                return Err("Sign-in failed: check your email and password".into());
+            }
+            return Err(format!("Sign-in failed: {}", detail));
         }
         Ok(AuthInfo {
             token: body["token"].as_str().ok_or("token missing")?.to_string(),
@@ -428,6 +431,50 @@ impl Client {
         }
     }
 
+    /// Yeni söhbət (əlavələrlə): POST /api/v1/chats/new — content massiv ilə
+    pub fn chat_new_with_files(&self, token: &str, prompt: &str, model: &str, user_msg_id: &str, files: &[UploadedFile]) -> Result<String, String> {
+        let mut chat = chat_new_object(prompt, model, user_msg_id);
+        if !files.is_empty() {
+            let mut parts: Vec<Value> = vec![json!({"type": "text", "text": prompt})];
+            for f in files {
+                let url = if f.direct_url.is_empty() { &f.id } else { &f.direct_url };
+                match f.media.as_str() {
+                    "image" => parts.push(json!({"type": "image_url", "image_url": {"url": url}})),
+                    "video" => parts.push(json!({"type": "video_url", "video_url": {"url": url}})),
+                    _ => parts.push(json!({"type": "file_url", "file_url": {"url": url}})),
+                }
+            }
+            if let Some(m) = chat["history"]["messages"]
+                .as_object_mut()
+                .and_then(|o| o.get_mut(user_msg_id))
+                .and_then(|v| v.as_object_mut())
+            {
+                m.insert("content".into(), Value::Array(parts));
+            }
+        }
+        let resp = self.send_with_retry(
+            || {
+                self.req(reqwest::Method::POST, &format!("{}/api/v1/chats/new", BASE))
+                    .header("Authorization", format!("Bearer {}", token))
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "application/json")
+                    .header("x-region", "overseas")
+                    .json(&json!({ "chat": chat }))
+            },
+            12,
+        )?;
+        let status = resp.status();
+        let body: Value = resp.json().unwrap_or(Value::Null);
+        if !status.is_success() {
+            return Err(format!(
+                "Chat could not be created (HTTP {}): {}",
+                status,
+                body["detail"].as_str().unwrap_or("?")
+            ));
+        }
+        body["id"].as_str().map(|s| s.to_string()).ok_or_else(|| "chat id missing".into())
+    }
+
     /// Yeni söhbət: POST /api/v1/chats/new
     pub fn chat_new(&self, token: &str, prompt: &str, model: &str, user_msg_id: &str) -> Result<String, String> {
         let chat = chat_new_object(prompt, model, user_msg_id);
@@ -490,6 +537,90 @@ impl Client {
             12,
         )?;
         Ok(resp)
+    }
+    /// Fayl yüklə: POST /api/v1/storage/pfs/files/upload (multipart "file")
+    /// Cavab: {code:0, data:{file:{id, filename, type, meta:{size}, ...}}}
+    pub fn upload_file(&self, token: &str, bytes: &[u8], filename: &str, mime: &str) -> Result<UploadedFile, String> {
+        let resp = self.send_with_retry(
+            || {
+                let part = reqwest::blocking::multipart::Part::bytes(bytes.to_vec())
+                    .file_name(filename.to_string())
+                    .mime_str(mime)
+                    .unwrap_or_else(|_| reqwest::blocking::multipart::Part::bytes(bytes.to_vec()).file_name(filename.to_string()));
+                let form = reqwest::blocking::multipart::Form::new().part("file", part);
+                self.req(reqwest::Method::POST, &format!("{}/api/v1/storage/pfs/files/upload", BASE))
+                    .header("Authorization", format!("Bearer {}", token))
+                    .header("Accept", "application/json")
+                    .multipart(form)
+            },
+            4,
+        )?;
+        let status = resp.status();
+        let body: Value = resp.json().map_err(|_| format!("Upload failed (HTTP {})", status))?;
+        if !status.is_success() || body["code"].as_i64() != Some(0) {
+            let detail = body["detail"].as_str()
+                .or_else(|| body["message"].as_str())
+                .unwrap_or("upload failed");
+            return Err(format!("Upload failed: {}", detail));
+        }
+        let f = &body["data"]["file"];
+        let id = f["id"].as_str()
+            .or_else(|| body["data"]["file"]["file_id"].as_str())
+            .ok_or("file id missing")?
+            .to_string();
+        let media_type = media_kind(mime, filename);
+        let size = f["meta"]["size"].as_i64()
+            .or_else(|| body["data"]["file"]["size"].as_i64())
+            .unwrap_or(bytes.len() as i64);
+        Ok(UploadedFile {
+            id,
+            name: filename.to_string(),
+            media: media_type.to_string(),
+            size,
+            direct_url: f["direct_url"].as_str().unwrap_or("").to_string(),
+        })
+    }
+}
+
+/// Yüklənmiş fayl məlumatı
+#[derive(Clone, Debug)]
+pub struct UploadedFile {
+    pub id: String,
+    pub name: String,
+    pub media: String,     // "image" | "video" | "doc"
+    pub size: i64,
+    pub direct_url: String,
+}
+
+/// MIME/ad → media növü (veb tətbiqinin təsnifatı)
+pub fn media_kind(mime: &str, name: &str) -> &'static str {
+    let m = mime.to_ascii_lowercase();
+    if m.starts_with("image/") {
+        "image"
+    } else if m.starts_with("video/") {
+        "video"
+    } else {
+        let n = name.to_ascii_lowercase();
+        if n.ends_with(".png") || n.ends_with(".jpg") || n.ends_with(".jpeg") || n.ends_with(".gif") || n.ends_with(".webp") || n.ends_with(".bmp") {
+            "image"
+        } else if n.ends_with(".mp4") || n.ends_with(".mov") || n.ends_with(".avi") || n.ends_with(".mkv") || n.ends_with(".webm") {
+            "video"
+        } else {
+            "doc"
+        }
+    }
+}
+
+/// İnsan oxunan ölçü
+pub fn human_size(bytes: i64) -> String {
+    if bytes < 1024 {
+        format!("{} B", bytes)
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else if bytes < 1024 * 1024 * 1024 {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else {
+        format!("{:.1} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
     }
 }
 

@@ -61,7 +61,8 @@ component ConvRow inherits Rectangle {
 
 export component Sidebar inherits Rectangle {
     // arxa fon
-    background: #40000000;
+    background: #80000000;
+
 
     TouchArea {
         clicked => { App.sidebar-open = false; }
@@ -137,7 +138,6 @@ export component Sidebar inherits Rectangle {
                     color: Theme.text-3;
                     font-size: 13px;
                     font-family: Theme.font-body;
-                    padding-top: 10px;
                 }
                 if !App.history-loading && App.conversations.length == 0 : Text {
                     text: App.is-guest ? "Sign in to sync your chat history" : "No conversations yet";
@@ -145,7 +145,6 @@ export component Sidebar inherits Rectangle {
                     font-size: 13px;
                     font-family: Theme.font-body;
                     wrap: word-wrap;
-                    padding-top: 10px;
                 }
 
                 if App.conversations.length > 0 : conv-list := ListView {
@@ -154,6 +153,63 @@ export component Sidebar inherits Rectangle {
                         conv: c;
                         open-it() => { App.open-conversation(c.id); }
                         delete-it() => { App.delete-conversation(c.id); }
+                    }
+                }
+
+                Rectangle { vertical-stretch: 1; }
+
+                // hesab sırası
+                Rectangle {
+                    height: 52px;
+                    border-radius: 10px;
+                    background: acct.has-hover ? Theme.hover : transparent;
+                    acct := TouchArea {
+                        clicked => {
+                            if (App.is-guest) {
+                                App.sidebar-open = false;
+                                App.login-step = 0;
+                                App.authed = false;
+                            } else {
+                                App.sign-out();
+                            }
+                        }
+                    }
+                    HorizontalLayout {
+                        padding-left: 10px;
+                        padding-right: 10px;
+                        spacing: 10px;
+                        alignment: start;
+                        Rectangle {
+                            width: 30px; height: 30px; y: 11px;
+                            border-radius: 15px;
+                            background: Theme.subtle;
+                            Text {
+                                text: App.is-guest ? "?" : "";
+                                font-size: 13px;
+                                font-weight: 700;
+                                color: Theme.text;
+                                font-family: Theme.font-body;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                        Text {
+                            text: App.is-guest ? "Sign in to Z.ai" : App.user-name;
+                            font-size: 14px;
+                            font-weight: 700;
+                            color: Theme.text;
+                            font-family: Theme.font-body;
+                            vertical-alignment: center;
+                            overflow: elide;
+                            horizontal-stretch: 1;
+                        }
+                        if !App.is-guest : Text {
+                            text: "Sign out";
+                            font-size: 12px;
+                            color: Theme.text-3;
+                            font-family: Theme.font-body;
+                            vertical-alignment: center;
+                        }
                     }
                 }
             }

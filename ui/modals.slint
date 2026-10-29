@@ -1,284 +1,14 @@
 // ============================================================
-//  Modallar: Sign-in, Model seçici, Fazat/Toast
+//  Modallar: Model seçici, Fayl seçici (MediaStore), Fazat/Toast
 // ============================================================
 
 import { Theme } from "theme.slint";
 import { App } from "state.slint";
-import { ModelItem } from "state.slint";
+import { ModelItem, PickedFile } from "state.slint";
+import { ListView, Spinner } from "std-widgets.slint";
 import {
-    IconX, IconMail, IconKey, IconCheck, IconChevronRight, IconUser, IconAlert,
+    IconX, IconCheck, IconImage, IconFileDoc, IconVideoFile, IconPaperclip, IconExternalLink,
 } from "icons.slint";
-
-// ---------- Giriş modallı ----------
-
-component FieldBox inherits Rectangle {
-    in property <string> placeholder;
-    in-out property <string> txt-property;
-    background: Theme.surface;
-    border-width: 1px;
-    border-radius: 8px;
-    border-color: field.has-focus ? Theme.text-2 : Theme.border;
-    height: 44px;
-
-    Rectangle {
-        height: parent.height;
-        field := TextInput {
-            x: 12px; y: 0;
-            width: parent.width - 24px;
-            height: parent.height;
-            vertical-alignment: center;
-            font-size: 15px;
-            font-family: Theme.font-body;
-            color: Theme.text;
-            wrap: no-wrap;
-            text <=> root.txt-property;
-        }
-        if txt-property == "" : Text {
-            x: 12px; y: 0;
-            height: parent.height;
-            text: root.placeholder;
-            color: Theme.placeholder;
-            font-size: 15px;
-            font-family: Theme.font-body;
-            vertical-alignment: center;
-        }
-    }
-}
-
-export component SignInModal inherits Rectangle {
-    // arxa fonu qarlaşdır
-    background: #66000000;
-
-    TouchArea {
-        clicked => { if (!App.signin-busy) { App.signin-open = false; } }
-    }
-
-    // kart
-    Rectangle {
-        x: (parent.width - Math.min(parent.width - 32px, 400px)) / 2;
-        y: Math.max(40px, (parent.height - card-height) / 3);
-        width: Math.min(parent.width - 32px, 400px);
-        height: card-height;
-        property <length> card-height: 520px;
-
-        background: Theme.surface;
-        border-radius: 16px;
-        drop-shadow-blur: 32px;
-        drop-shadow-color: #40000000;
-
-        VerticalLayout {
-            padding: 24px;
-            spacing: 14px;
-
-            // başlıq + bağla
-            HorizontalLayout {
-                Text {
-                    text: "Sign in to Z.ai";
-                    font-size: 20px;
-                    font-weight: 700;
-                    color: Theme.text;
-                    font-family: Theme.font-body;
-                    vertical-alignment: center;
-                    horizontal-stretch: 1;
-                }
-                TouchArea {
-                    width: 32px; height: 32px;
-                    clicked => { if (!App.signin-busy) { App.signin-open = false; } }
-                    IconX { x: 8px; y: 8px; width: 16px; height: 16px; stroke: Theme.text-2; stroke-width: 2px; }
-                }
-            }
-
-            // tab seçimi: Email | Token
-            Rectangle {
-                height: 36px;
-                background: Theme.hover;
-                border-radius: 9px;
-
-                HorizontalLayout {
-                    padding: 3px;
-                    spacing: 3px;
-
-                    Rectangle {
-                        border-radius: 7px;
-                        background: App.signin-tab == 0 ? Theme.surface : transparent;
-                        t0 := TouchArea {
-                            clicked => { App.signin-tab = 0; }
-                            Text {
-                                text: "Email";
-                                font-size: 13px;
-                                font-weight: App.signin-tab == 0 ? 700 : 400;
-                                color: App.signin-tab == 0 ? Theme.text : Theme.text-2;
-                                font-family: Theme.font-body;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-                        }
-                    }
-                    Rectangle {
-                        border-radius: 7px;
-                        background: App.signin-tab == 1 ? Theme.surface : transparent;
-                        t1 := TouchArea {
-                            clicked => { App.signin-tab = 1; }
-                            Text {
-                                text: "Account token";
-                                font-size: 13px;
-                                font-weight: App.signin-tab == 1 ? 700 : 400;
-                                color: App.signin-tab == 1 ? Theme.text : Theme.text-2;
-                                font-family: Theme.font-body;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-                        }
-                    }
-                }
-            }
-
-            // ---- Email tab ----
-            if App.signin-tab == 0 : VerticalLayout {
-                spacing: 12px;
-
-                email-field := FieldBox {
-                    placeholder: "Email";
-                    txt-property <=> App.email;
-                }
-                pass-field := FieldBox {
-                    placeholder: "Password";
-                    txt-property <=> App.password;
-                }
-
-                if App.signin-error != "" : HorizontalLayout {
-                    spacing: 6px;
-                    IconAlert { width: 14px; height: 14px; stroke: #e03131; stroke-width: 2px; y: 2px; }
-                    Text {
-                        text: App.signin-error;
-                        color: #e03131;
-                        font-size: 13px;
-                        font-family: Theme.font-body;
-                        wrap: word-wrap;
-                    }
-                }
-
-                Rectangle {
-                    height: 44px;
-                    border-radius: Theme.btn-r;
-                    background: App.signin-busy ? #5c5c5c : Theme.btn-dark;
-                    go := TouchArea {
-                        clicked => {
-                            if (!App.signin-busy && App.email != "" && App.password != "") {
-                                App.do-sign-in(App.email, App.password);
-                            }
-                        }
-                        Text {
-                            text: App.signin-busy ? "Signing in…" : "Continue";
-                            color: #ffffff;
-                            font-size: 15px;
-                            font-weight: 700;
-                            font-family: Theme.font-body;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
-                    }
-                }
-            }
-
-            // ---- Token tab ----
-            if App.signin-tab == 1 : VerticalLayout {
-                spacing: 12px;
-
-                token-field := Rectangle {
-                    height: 88px;
-                    background: Theme.surface;
-                    border-width: 1px;
-                    border-radius: 8px;
-                    border-color: Theme.border;
-
-                    tok := TextInput {
-                        x: 10px; y: 8px;
-                        width: parent.width - 20px;
-                        height: parent.height - 16px;
-
-                        text <=> App.token-input;
-                        font-size: 12px;
-                        font-family: Theme.font-mono;
-                        color: Theme.text;
-                        wrap: word-wrap;
-                    }
-                    if App.token-input == "" : Text {
-                        x: 10px; y: 8px;
-                        text: "Paste your token here (eyJhbGciOi…)";
-                        color: Theme.placeholder;
-                        font-size: 12px;
-                        font-family: Theme.font-body;
-                    }
-                }
-
-                Text {
-                    text: "How to get your token:\n1. Open chat.z.ai in your phone browser and sign in\n2. Browser menu → 'Inspect' or 'Debug' → Application / Storage\n3. Local Storage → https://chat.z.ai → copy the 'token' value";
-                    color: Theme.text-2;
-                    font-size: 12px;
-                    font-family: Theme.font-body;
-                    wrap: word-wrap;
-                }
-
-                if App.signin-error != "" : HorizontalLayout {
-                    spacing: 6px;
-                    IconAlert { width: 14px; height: 14px; stroke: #e03131; stroke-width: 2px; y: 2px; }
-                    Text {
-                        text: App.signin-error;
-                        color: #e03131;
-                        font-size: 13px;
-                        font-family: Theme.font-body;
-                        wrap: word-wrap;
-                    }
-                }
-
-                Rectangle {
-                    height: 44px;
-                    border-radius: Theme.btn-r;
-                    background: App.signin-busy ? #5c5c5c : Theme.btn-dark;
-                    go2 := TouchArea {
-                        clicked => {
-                            if (!App.signin-busy && App.token-input != "") {
-                                App.do-token-sign-in(App.token-input);
-                            }
-                        }
-                        Text {
-                            text: App.signin-busy ? "Checking…" : "Continue with token";
-                            color: #ffffff;
-                            font-size: 15px;
-                            font-weight: 700;
-                            font-family: Theme.font-body;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
-                    }
-                }
-            }
-
-            // ayırıcı + qonaq
-            Rectangle { height: 4px; }
-
-            Rectangle {
-                height: 42px;
-                border-radius: Theme.btn-r;
-                border-width: 1px;
-                border-color: Theme.border;
-                background: gst.has-hover ? Theme.hover : transparent;
-                gst := TouchArea {
-                    clicked => { if (!App.signin-busy) { App.continue-as-guest(); } }
-                    Text {
-                        text: "Continue as guest";
-                        color: Theme.text;
-                        font-size: 14px;
-                        font-family: Theme.font-body;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-                }
-            }
-        }
-    }
-}
 
 // ---------- Model seçici popup ----------
 
@@ -320,7 +50,7 @@ component ModelRow inherits Rectangle {
 }
 
 export component ModelPopup inherits Rectangle {
-    background: #40000000;
+    background: #66000000;
 
     TouchArea {
         clicked => { App.model-popup-open = false; }
@@ -335,7 +65,7 @@ export component ModelPopup inherits Rectangle {
         background: Theme.surface;
         border-radius: 14px;
         drop-shadow-blur: 28px;
-        drop-shadow-color: #33000000;
+        drop-shadow-color: #55000000;
 
         mp-col := VerticalLayout {
             padding: 16px;
@@ -388,13 +118,143 @@ export component ModelPopup inherits Rectangle {
                         Text {
                             text: i == 0 ? App.effort-0 : i == 1 ? App.effort-1 : App.effort-2;
                             font-size: 13px;
-                            color: App.effort == i ? #ffffff : Theme.text;
+                            color: App.effort == i ? Theme.btn-text : Theme.text;
                             font-family: Theme.font-body;
                             horizontal-alignment: center;
                             vertical-alignment: center;
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+// ---------- Fayl seçici (MediaStore-dan native siyahı) ----------
+
+component PickerRow inherits Rectangle {
+    in property <PickedFile> file;
+    callback picked(string);
+
+    height: 54px;
+    background: ta.has-hover ? Theme.hover : transparent;
+    border-radius: 10px;
+
+    ta := TouchArea {
+        clicked => { root.picked(root.file.uri); }
+    }
+
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 12px;
+        alignment: start;
+
+        Rectangle {
+            width: 38px; height: 38px; y: 8px;
+            border-radius: 8px;
+            background: Theme.surface-2;
+            if file.media == "image" : IconImage { x: 9px; y: 9px; width: 20px; height: 20px; stroke: Theme.text-2; stroke-width: 1.6px; }
+            if file.media == "video" : IconVideoFile { x: 9px; y: 9px; width: 20px; height: 20px; stroke: Theme.text-2; stroke-width: 1.6px; }
+            if file.media == "doc" : IconFileDoc { x: 9px; y: 9px; width: 20px; height: 20px; stroke: Theme.text-2; stroke-width: 1.6px; }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            Text {
+                text: root.file.name;
+                font-size: 14px;
+                color: Theme.text;
+                font-family: Theme.font-body;
+                overflow: elide;
+                wrap: no-wrap;
+            }
+            Text {
+                text: root.file.size;
+                font-size: 11px;
+                color: Theme.text-3;
+                font-family: Theme.font-body;
+            }
+        }
+    }
+}
+
+export component FilePickerModal inherits Rectangle {
+    background: #80000000;
+
+    TouchArea {
+        clicked => { App.picker-open = false; }
+    }
+
+    Rectangle {
+        x: 12px;
+        y: Math.max(40px, (parent.height - self.height) / 2);
+        width: parent.width - 24px;
+        height: Math.min(parent.height - 80px, 560px);
+
+        background: Theme.bg;
+        border-radius: 16px;
+        drop-shadow-blur: 32px;
+        drop-shadow-color: #55000000;
+
+        VerticalLayout {
+            padding: 16px;
+            spacing: 8px;
+
+            // başlıq
+            HorizontalLayout {
+                spacing: 8px;
+                IconPaperclip { width: 18px; height: 18px; stroke: Theme.text; stroke-width: 1.8px; y: 6px; }
+                Text {
+                    text: "Attach files";
+                    font-size: 16px;
+                    font-weight: 700;
+                    color: Theme.text;
+                    font-family: Theme.font-body;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                TouchArea {
+                    width: 32px; height: 32px;
+                    clicked => { App.picker-open = false; }
+                    IconX { x: 8px; y: 8px; width: 16px; height: 16px; stroke: Theme.text-2; stroke-width: 2px; }
+                }
+            }
+
+            // siyahı
+            if App.picker-files.length > 0 : ListView {
+                vertical-stretch: 1;
+                for f in App.picker-files : PickerRow {
+                    file: f;
+                    picked(uri) => { App.pick-file(uri); }
+                }
+            }
+
+            if App.picker-files.length == 0 && !App.picker-loading : VerticalLayout {
+                vertical-stretch: 1;
+                alignment: center;
+                spacing: 10px;
+                Text {
+                    text: App.is-guest ? "Sign in to attach files" : "No files found";
+                    font-size: 14px;
+                    color: Theme.text-2;
+                    font-family: Theme.font-body;
+                    horizontal-alignment: center;
+                }
+                if !App.is-guest : Text {
+                    text: "Allow storage access, then reopen the picker";
+                    font-size: 12px;
+                    color: Theme.text-3;
+                    font-family: Theme.font-body;
+                    horizontal-alignment: center;
+                }
+            }
+
+            if App.picker-loading : VerticalLayout {
+                vertical-stretch: 1;
+                alignment: center;
+                Spinner { indeterminate: true; }
             }
         }
     }
@@ -409,7 +269,7 @@ export component PhaseToast inherits Rectangle {
         width: Math.min(parent.width - 40px, toast-text.preferred-width + 40px);
         height: 38px;
         border-radius: 19px;
-        background: #e60d0d0d;
+        background: Theme.dark ? #e62b2b2b : #e60d0d0d;
 
         toast-text := Text {
             x: 20px; y: 0;
