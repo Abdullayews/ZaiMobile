@@ -30,6 +30,9 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       # ---- Keyfiyyət qapıları (build-dən ƏVVƏL — xətalı kod APK-a çatmasın) ----
+      - name: Host asılılıqları (fontconfig — slint host preview üçün)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libfontconfig1-dev pkg-config > /dev/null
+
       - name: Clippy (host, -D warnings)
         run: cargo clippy --release --lib --bins -- -D warnings
 
