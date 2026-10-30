@@ -187,6 +187,10 @@ component MessageRow inherits VerticalLayout {
     callback copy-code(string);
     callback regenerate();
 
+    // Sətir ListView tərəfindən YARADILANDA (yalnız görünəndə) markdown
+    // bloklarının parse-ını Rust-dan xahiş et — bütün tarixçə yox, tək sətir.
+    init => { App.ensure-blocks-parsed(root.index); }
+
     spacing: 4px;
     padding-top: 10px;
     padding-bottom: 10px;

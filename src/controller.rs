@@ -82,6 +82,26 @@ fn l<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     }
 }
 
+/// Bu job hələ də AKTİV (current) job-durmu? Söhbət dəyişəndə köhnə
+/// axının gecikən hadisələri yeni söhbətin mesajlarına yazmamalıdır —
+/// emit/finish/retry yolları bunu yoxlayır.
+fn is_current_job(core: &Core, job: &Arc<Job>) -> bool {
+    l(&core.current_job)
+        .as_ref()
+        .map(|j| Arc::ptr_eq(j, job))
+        .unwrap_or(false)
+}
+
+/// Aktiv axını dayandır və current_job-i təmizlə (söhbət dəyişəndə,
+/// yeni chat, sign-out, yeni göndəriş). İşçi thread stop bayrağını
+/// gec də olsa görəcək; ona qədər gələn hadisələr is_current_job
+/// yoxlaması ilə udulur.
+fn stop_current_job(core: &Core) {
+    if let Some(j) = l(&core.current_job).take() {
+        j.stop.store(true, Ordering::Relaxed);
+    }
+}
+
 /// Açılış/axın vaxt xəttini logla (adb logcat ilə ölçmək üçün).
 /// Yalnız ZAI_TIMING=1 aktivləşir — adi istifadədə susur.
 pub(crate) fn timing_enabled() -> bool {
@@ -118,16 +138,25 @@ fn files_model(files: &[UploadedFile]) -> slint::ModelRc<Attachment> {
     vm.into()
 }
 
-fn raw_to_ui(m: &RawMsg) -> ChatMessage {
+/// `eager=true`: bloklar dərhal parse olunur (yalnız tək sətir yenilənəndə —
+/// axın bitişində; init callback-i yenidən atəşlənmədiyi üçün lazımdır).
+/// `eager=false`: BOŞ, amma həqiqi VecModel (axın flush-u downcast edə bilsin
+/// deyə) — ListView sətri görünəndə `ensure-blocks-parsed` ilə tək-tək parse
+/// olunur. Uzun söhbət açılışında bütün tarixçə üçün markdown parse
+/// YOXDUR — yalnız görünən sətirlər.
+fn raw_to_ui(m: &RawMsg, eager: bool) -> ChatMessage {
+    let blocks: slint::ModelRc<MessageBlock> = if m.error || m.role == "user" {
+        slint::ModelRc::default()
+    } else if eager {
+        blocks_model(&m.text)
+    } else {
+        Rc::new(slint::VecModel::<MessageBlock>::default()).into()
+    };
     ChatMessage {
         id: m.id.clone().into(),
         role: m.role.clone().into(),
         text: m.text.clone().into(),
-        blocks: if m.error || m.role == "user" {
-            slint::ModelRc::default()
-        } else {
-            blocks_model(&m.text)
-        },
+        blocks,
         files: if m.role == "user" { files_model(&m.files) } else { slint::ModelRc::default() },
         streaming: m.streaming,
         error: m.error,
@@ -148,7 +177,7 @@ fn push_all_messages(core: &Core, weak: &Weak<AppWindow>) {
                 let g = app.global::<App>();
                 let vm: Rc<slint::VecModel<ChatMessage>> = Rc::new(slint::VecModel::default());
                 for r in &raws {
-                    vm.push(raw_to_ui(r));
+                    vm.push(raw_to_ui(r, false));
                 }
                 g.set_messages(vm.into());
                 // axın keşi köhnə modelə işarə edir — ləğv et
@@ -188,7 +217,7 @@ fn update_last_message(core: &Core, weak: &Weak<AppWindow>) {
                 let model = g.get_messages();
                 if let Some(vm) = model.as_any().downcast_ref::<slint::VecModel<ChatMessage>>() {
                     if vm.row_count() == count {
-                        vm.set_row_data(count - 1, raw_to_ui(&last));
+                        vm.set_row_data(count - 1, raw_to_ui(&last, true));
                         clear_stream_cache();
                     }
                 }
@@ -210,6 +239,13 @@ fn flush_stream_blocks(weak: &Weak<AppWindow>, msg_id: String, base: usize, bloc
             let Some(vm) = messages.as_any().downcast_ref::<slint::VecModel<ChatMessage>>() else { return };
             let rows = vm.row_count();
             if rows == 0 {
+                return;
+            }
+            // YARIŞ QORUMASI: flush event loop-a yazıldıqdan sonra söhbət
+            // dəyişə bilər (keş təmizlənər, son sıra ARTIQ BAŞQA mesajdır).
+            // Son sıranın id-si axın mesajının id-si deyilsə — heç nə yazma.
+            let last_id = vm.row_data(rows - 1).map(|m| m.id.to_string());
+            if last_id.as_deref() != Some(msg_id.as_str()) {
                 return;
             }
             // keş: eyni mesaj üçün mövcud blok modeli
@@ -656,6 +692,10 @@ fn refresh_attachment_ui(core: &Core, weak: &Weak<AppWindow>) {
 }
 
 fn spawn_send(core: Arc<Core>, weak: Weak<AppWindow>, prompt: String, files: Vec<UploadedFile>) {
+    // Yeni axın başlayır — əvvəlki job (nəsə işləyirsə) arxaikdir: dayandır.
+    // Normalda UI buna imkan vermir (can-send !streaming tələb edir), bu
+    // müdafiədir — regenerate/retry_send yolları üçün də tək nöqtədir.
+    stop_current_job(&core);
     // İşı göstər
     {
         let um = RawMsg {
@@ -696,13 +736,18 @@ fn spawn_send(core: Arc<Core>, weak: Weak<AppWindow>, prompt: String, files: Vec
         match result {
             Ok(()) => {}
             Err(e) if e == "CAPTCHA" => {
-                finish_stream(&core, &weak, true,
+                finish_stream(&core, &weak, &job, true,
                     "Server requires verification for this network.\nSign in with your account (Sign in) and try again.");
                 banner(&weak, "Verification required — sign in with your account to continue");
             }
             Err(e) if e == "UNAUTHORIZED" => {
                 // qonaq tokeni vaxtı bitib — yenilə və bir dəfə təkrar cəhd et
                 if l(&core.persisted).is_guest {
+                    // söhbət dəyişibsə yenidən GÖNDƏRMƏ — köhnə prompt
+                    // yeni söhbətin chat_id-si ilə getməməli
+                    if !is_current_job(&core, &job) {
+                        return;
+                    }
                     if let Ok(a) = core.client.guest_auth() {
                         apply_auth(&core, &weak, &a);
                         {
@@ -724,17 +769,22 @@ fn spawn_send(core: Arc<Core>, weak: Weak<AppWindow>, prompt: String, files: Vec
                         toast(&weak, "Session expired — signed in as guest");
                     }
                 }
-                finish_stream(&core, &weak, true, "Session expired. Please sign in again.");
+                finish_stream(&core, &weak, &job, true, "Session expired. Please sign in again.");
             }
             Err(e) => {
                 // AVTOMATİK YENİDƏN GÖNDƏRMƏ: fayllar saxlanılır, mesaj təkrarlanır
                 if stream::is_retryable_error(&e) {
-                    mark_retrying(&core, &weak, true, &stream::clean_error(&e));
+                    mark_retrying(&core, &weak, &job, true, &stream::clean_error(&e));
                     let mut delay = 2500u64;
                     for attempt in 0..3 {
                         std::thread::sleep(Duration::from_millis(api::jitter_ms(delay)));
                         if job.is_stopped() {
                             break;
+                        }
+                        // söhbət dəyişibsə təkrar GÖNDƏRMƏ — köhnə axın yeni
+                        // söhbətin chat_id-sinə yazmasın
+                        if !is_current_job(&core, &job) {
+                            return;
                         }
                         // sonuncu assistant mesajını sıfırla
                         {
@@ -751,20 +801,20 @@ fn spawn_send(core: Arc<Core>, weak: Weak<AppWindow>, prompt: String, files: Vec
                         match run_send(&core, &weak, &prompt, &files, &job) {
                             Ok(()) => return,
                             Err(e2) if e2 == "CAPTCHA" || e2 == "UNAUTHORIZED" => {
-                                finish_stream(&core, &weak, true, &stream::clean_error(&e2));
+                                finish_stream(&core, &weak, &job, true, &stream::clean_error(&e2));
                                 return;
                             }
                             Err(e2) => {
-                                mark_retrying(&core, &weak, true, &stream::clean_error(&e2));
+                                mark_retrying(&core, &weak, &job, true, &stream::clean_error(&e2));
                                 delay = (delay * 2).min(15000);
                                 let _ = attempt;
                                 continue;
                             }
                         }
                     }
-                    finish_stream(&core, &weak, true, "Could not send after several retries. Tap to retry manually.");
+                    finish_stream(&core, &weak, &job, true, "Could not send after several retries. Tap to retry manually.");
                 } else {
-                    finish_stream(&core, &weak, true, &e);
+                    finish_stream(&core, &weak, &job, true, &e);
                 }
             }
         }
@@ -772,7 +822,10 @@ fn spawn_send(core: Arc<Core>, weak: Weak<AppWindow>, prompt: String, files: Vec
 }
 
 /// Son mesajı «avtomatik yenidən cəhd» vəziyyətinə sal
-fn mark_retrying(core: &Core, weak: &Weak<AppWindow>, on: bool, msg: &str) {
+fn mark_retrying(core: &Core, weak: &Weak<AppWindow>, job: &Arc<Job>, on: bool, msg: &str) {
+    if !is_current_job(core, job) {
+        return; // söhbət dəyişib — köhnə axın yeni mesaja yazmasın
+    }
     {
         let mut msgs = l(&core.messages);
         if let Some(last) = msgs.last_mut() {
@@ -830,7 +883,14 @@ fn run_send(core: &Arc<Core>, weak: &Weak<AppWindow>, prompt: &str, files: &[Upl
 
     let core2 = core.clone();
     let weak2 = weak.clone();
+    let job_g = job.clone();
     let mut emit = |ev: StreamEvent| {
+        // Söhbət dəyişibsə bu axın artıq «yad»dır: hadisələri ud — köhnə
+        // axın yeni söhbətin mesajlarına/chat_id-nə yazmasın (stop bayrağı
+        // bloklanan oxu zamanı gec görülür, bu yoxlama dərhal işləyir).
+        if !is_current_job(&core2, &job_g) {
+            return;
+        }
         match ev {
             StreamEvent::Delta(d) => {
                 if first_delta {
@@ -918,7 +978,7 @@ fn run_send(core: &Arc<Core>, weak: &Weak<AppWindow>, prompt: &str, files: &[Upl
 
     match result {
         Ok(()) => {
-            finish_stream(core, weak, false, "");
+            finish_stream(core, weak, job, false, "");
             // başlıq yaradılıbsa siyahını yenilə
             if is_first && !l(&core.persisted).is_guest {
                 spawn_load_conversations(core.clone(), weak.clone());
@@ -930,8 +990,12 @@ fn run_send(core: &Arc<Core>, weak: &Weak<AppWindow>, prompt: &str, files: &[Upl
 }
 
 /// Axını bitir: son mesajı final vəziyyətə sal (yalnız son sıra yenilənir —
-/// bütün siyahı deyil)
-fn finish_stream(core: &Core, weak: &Weak<AppWindow>, is_error: bool, error_text: &str) {
+/// bütün siyahı deyil). Job artıq current deyilsə (söhbət dəyişib) — heç nə
+/// yazma: yeni söhbətin streaming vəziyyətini korlamayın.
+fn finish_stream(core: &Core, weak: &Weak<AppWindow>, job: &Arc<Job>, is_error: bool, error_text: &str) {
+    if !is_current_job(core, job) {
+        return;
+    }
     {
         let mut msgs = l(&core.messages);
         if let Some(last) = msgs.last_mut() {
@@ -998,6 +1062,9 @@ fn content_to_files(c: &Value) -> Vec<UploadedFile> {
 }
 
 fn spawn_open_conversation(core: Arc<Core>, weak: Weak<AppWindow>, id: String) {
+    // aktiv axın varsa dayandır — köhnə söhbətin axını yeni söhbətə
+    // "qan qarışdırmamalı" (Phase 1.4: keçid zamanı köhnə axını dayandır)
+    stop_current_job(&core);
     toast(&weak, "Loading chat…");
     std::thread::spawn(move || {
         let token = l(&core.persisted).token.clone();
@@ -1289,6 +1356,8 @@ pub fn run() {
         let core_c = core.clone();
         let weak_c = weak.clone();
         g.on_new_chat(move || {
+            // axın işləyirsə dayandır (yeni söhbətə yazmasın)
+            stop_current_job(&core_c);
             *l(&core_c.chat_id) = String::new();
             *l(&core_c.chat_title) = "New Chat".into();
             *l(&core_c.messages) = Vec::new();
@@ -1519,6 +1588,8 @@ pub fn run() {
             let core_cc = core_c.clone();
             let weak_cc = weak_c.clone();
             std::thread::spawn(move || {
+                // aktiv axını dayandır
+                stop_current_job(&core_cc);
                 {
                     let mut p = l(&core_cc.persisted);
                     p.token = String::new();
@@ -1629,6 +1700,46 @@ pub fn run() {
         g.on_copy_to_clipboard(|t| {
             crate::clipboard::copy_text(&t);
         });
+
+        // lazy markdown parse: ListView sətri YARADILANDA çağırılır (yalnız
+        // görünən sətirlər). Uzun söhbətin bütün tarixçəsi açılışda parse
+        // olunmur — RAM və açılış vaxtı yalnız görünən hissəyə bağlı qalır.
+        {
+            let weak_b = weak.clone();
+            g.on_ensure_blocks_parsed(move |idx| {
+                let Some(app) = weak_b.upgrade() else { return };
+                let g = app.global::<App>();
+                let model = g.get_messages();
+                let Some(vm) = model
+                    .as_any()
+                    .downcast_ref::<slint::VecModel<ChatMessage>>()
+                else {
+                    return;
+                };
+                let i = idx.max(0) as usize;
+                if i >= vm.row_count() {
+                    return;
+                }
+                let Some(row) = vm.row_data(i) else { return };
+                // yalnız: assistant + xətasız + bitmiş + mətnli
+                if row.role != "assistant" || row.error || row.streaming || row.text.is_empty() {
+                    return;
+                }
+                // artıq parse olunub? (sətir scroll-back-də yenidən yaradıla bilər)
+                let already = row
+                    .blocks
+                    .as_any()
+                    .downcast_ref::<slint::VecModel<MessageBlock>>()
+                    .map(|b| b.row_count() > 0)
+                    .unwrap_or(false);
+                if already {
+                    return;
+                }
+                let mut upd = row.clone();
+                upd.blocks = blocks_model(&row.text);
+                vm.set_row_data(i, upd);
+            });
+        }
     }
 
     // ---- dot animasiyası (axın zamanı) ----

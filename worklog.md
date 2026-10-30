@@ -133,3 +133,48 @@ ui/sidebar.slint — hesab sırası (sign out / sign in)
 - Düzəlişlər: hesabatda `rg`→`grep` (runner-da ripgrep yox idi, sayı səssizcə
   0 çıxırdı), release qeydləri clipboard razılığı əks etdirir (aae013b-dən bəri
   avtomatik deyil)
+
+### beta.30 (opt-level "s" təsbiqi)
+- APK: 9.56MB → **9.15MB** (−410KB, −4.3%) | .so: 19,534,104 → 19,377,528
+  (−156KB — matrix proqnozu −152KB ilə üst-üstə düşür)
+- Asılılıq sayı artıq düzgün: 323 (əvvəl səssizcə 0 idi)
+- CI 16/16 addım yaşıl, imza eyni keystore (CN=Z.ai Mobile, O=Abdullayews)
+
+## 2026-10-31 — Mərhələ 1.3/1.4/1.5: axın həyat dövrü + lazy markdown
+
+### Axın həyat dövrü (1.4 — "keçid zamanı köhnə axını dayandır")
+PROBLEM: axın zamanı başqa söhbətə keçid / yeni chat / sign-out köhnə axını
+dayandırmırdı. Emit `messages.last_mut()`-a yazdığından köhnə axının
+tokenləri YENİ söhbətin son mesajına «qan qarıışırdır»; retry loop-u
+`core.chat_id`-ni yenidən oxuyduğundan köhnə prompt yeni söhbətin
+chat_id-si ilə göndərilirdi; köhnə job-un finish-i yeni job-un streaming
+vəziyyətini sıfırlayırdı.
+
+HƏLL (mərhələli müdafiə):
+1. `stop_current_job()` — open_conversation / new_chat / sign_out /
+   spawn_send başlanğıcında: stop bayrağı + current_job-in təmizlənməsi
+2. `is_current_job()` (Arc::ptr_eq) — emit-in ƏVVƏLİNDƏ (bütün hadisələr
+   udulur — stop bayrağı bloklanan şəbəkə oxunda gec görülür), finish_stream
+   və mark_retrying girişində, hər retry yenidən göndərməsindən əvvəl
+3. İstifadəçinin öz stop düyməsi current_job-i təmizləmir → köhnə
+   davranış qorunur (qismən mətn saxlanılır, xəta göstərilmir)
+
+### Lazy markdown parse (1.3/1.5 — uzun söhbət)
+PROBLEM: `push_all_messages` tarixçədəki HƏR assistant mesajını dərhal
+parse edib VecModel düzəldirdi — 200+ mesajlıq söhbətdə açılış vaxtı və
+RAM bütün tarixçəyə bağlı idi (ListView-in virtualizasiyası delegate-ləri
+təxirə salırdı, amma model başdan dolu idi).
+
+HƏLL:
+- `raw_to_ui(eager=false)` — assistant sətirləri BOŞ (amma həqiqi) VecModel
+  alır; axın flush-u downcast-i işləsin deyə boş default ModelRc YOX
+- `MessageRow.init` → `App.ensure-blocks-parsed(index)` → Rust yalnız həmin
+  sətri parse edib `set_row_data` ilə doldurur (UI thread-də ~15-70µs/sətir)
+- `update_last_message` (axın bitişi) eager qalır — init mövcud delegate-də
+  yenidən atəşlənmir
+- scroll-back → sətir yenidən yaradılır → init → «artıq parse olunub»
+  yoxlaması → cheap early-return
+
+Nəticə (struktur): açılışda N mesajlıq parse → yalnız görünən ~10 sətir;
+RAM artımı görünən sətirlərlə məhdudlaşır. Kəmiyyət ölçümü cihazda
+(adb dumpsys meminfo + gfxinfo) aparılmalıdır.
