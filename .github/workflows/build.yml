@@ -82,7 +82,7 @@ jobs:
           echo "=== HESABAT ==="
           echo ".so: $(stat -c%s $SO) bayt ($(du -h $SO | cut -f1))"
           echo "Assets (gömülü): $(du -sh assets | cut -f1) — fonts $(du -sh assets/fonts | cut -f1), kartlar $(du -sh assets/cards | cut -f1)"
-          echo "Bağlı asılılıq sayı: $(cargo tree --target aarch64-linux-android --prefix none 2>/dev/null | rg -o '^[a-z0-9_-]+ v' | sort -u | wc -l)"
+          echo "Bağlı asılılıq sayı: $(cargo tree --target aarch64-linux-android --prefix none 2>/dev/null | grep -Eo '^[a-z0-9_-]+ v' | sort -u | wc -l)"
 
       - name: APK yığ
         run: |
@@ -144,7 +144,8 @@ jobs:
             • **Adi hesab girişi**: Google / Email / Github düymələri (saytın kimi) → email + şifrə
               ilə birbaşa native giriş (POST /api/v1/auths/signin)
             • **Captcha fallback axını**: Z.ai captcha tələb etdikdə — sistem brauzerində bir dəfə
-              giriş + clipboard-dan token-in AVTOMATİK aşkarlanması (eynəyi "eyJ" görəndə dərhal daxil olur)
+              giriş + clipboard-dan token aşkarlanması GÖSTƏRİLİR, yalnız siz "Sign in with detected
+              token" düyməsinə toxunanda daxil olursunuz (razılıqsız heç nə oxunmur)
             • **Dark tema (standart)** + light — saytın dəqiq CSS palette-i (index CSS-dən götürülüb)
             • **Fayl əlavələri**: MediaStore native fayl seçici → serverə upload
               (multipart /api/v1/storage/pfs/files/upload) → image_url/video_url/file_url content massivi
