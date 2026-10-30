@@ -22,19 +22,19 @@ fn android_clipboard_copy(text: &str) {
     //   context() -> Activity jobject (qlobal referans)
     let ctx = ndk_context::android_context();
     let vm_raw = ctx.vm() as *mut RawJavaVM;
-    let mut env = unsafe {
-        match jni::JavaVM::from_raw(vm_raw) {
-            Ok(vm) => match vm.attach_current_thread() {
-                Ok(e) => e,
-                Err(e) => {
-                    eprintln!("[clipboard] attach error: {}", e);
-                    return;
-                }
-            },
-            Err(e) => {
-                eprintln!("[clipboard] JavaVM error: {}", e);
-                return;
-            }
+    // vm funksiya sonuna qədər yaşayır — AttachGuard ondan borrov alır (jni 0.21.1)
+    let vm = match unsafe { jni::JavaVM::from_raw(vm_raw) } {
+        Ok(vm) => vm,
+        Err(e) => {
+            eprintln!("[clipboard] JavaVM error: {}", e);
+            return;
+        }
+    };
+    let mut env = match vm.attach_current_thread() {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("[clipboard] attach error: {}", e);
+            return;
         }
     };
     let activity = unsafe { JObject::from_raw(ctx.context() as jobject) };

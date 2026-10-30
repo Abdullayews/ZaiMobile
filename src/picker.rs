@@ -15,22 +15,23 @@ pub struct MediaFile {
 }
 
 /// JNI mühiti ndk_context-dən alınır (android-activity tərəfindən qeyd olunur).
+/// jni 0.21.1: `attach_current_thread` AttachGuard qaytarır və `vm`-dən borrov alır —
+/// ona görə `vm` funksiya sonuna qədər yaşayır (v4-ün sübut olunmuş pattern-i).
 #[cfg(target_os = "android")]
 fn with_env<F, R>(f: F) -> Option<R>
 where
-    F: FnOnce(&mut jni::JNIEnv<'static>) -> R,
+    F: for<'a> FnOnce(&mut jni::JNIEnv<'a>) -> R,
 {
-    use jni::sys::{jobject, JavaVM as RawJavaVM};
+    use jni::sys::JavaVM as RawJavaVM;
     let ctx = ndk_context::android_context();
     let vm_raw = ctx.vm() as *mut RawJavaVM;
-    let mut env = unsafe {
-        match jni::JavaVM::from_raw(vm_raw) {
-            Ok(vm) => match vm.attach_current_thread() {
-                Ok(e) => e,
-                Err(_) => return None,
-            },
-            Err(_) => return None,
-        }
+    let vm = match unsafe { jni::JavaVM::from_raw(vm_raw) } {
+        Ok(vm) => vm,
+        Err(_) => return None,
+    };
+    let mut env = match vm.attach_current_thread() {
+        Ok(e) => e,
+        Err(_) => return None,
     };
     Some(f(&mut env))
 }
@@ -156,8 +157,8 @@ pub fn request_storage_permission() {
 /// Bir MediaStore kolleksiyasından faylları oxu
 #[cfg(target_os = "android")]
 fn query_collection(
-    env: &mut jni::JNIEnv<'static>,
-    cr: &jni::objects::JObject<'static>,
+    env: &mut jni::JNIEnv<'_>,
+    cr: &jni::objects::JObject<'_>,
     uri_field_class: &str,
     media: &str,
     limit: i32,
@@ -173,13 +174,26 @@ fn query_collection(
         Err(_) => return,
     };
 
-    let projection = match env.new_object_array(3, "java/lang/String", env.new_string("").ok()?) {
+    let empty = match env.new_string("") {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    let projection = match env.new_object_array(3, "java/lang/String", &empty) {
         Ok(a) => a,
         Err(_) => return,
     };
-    let c0 = env.new_string("_id").ok()?;
-    let c1 = env.new_string("_display_name").ok()?;
-    let c2 = env.new_string("_size").ok()?;
+    let c0 = match env.new_string("_id") {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let c1 = match env.new_string("_display_name") {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let c2 = match env.new_string("_size") {
+        Ok(s) => s,
+        Err(_) => return,
+    };
     if env.set_object_array_element(&projection, 0, &c0).is_err() {
         return;
     }
@@ -311,7 +325,7 @@ pub fn read_uri_bytes(uri: &str) -> Result<(Vec<u8>, String, String), String> {
             let r: Result<(Vec<u8>, String, String), String> = (|| {
                 let cr = env
                     .call_method(&ctx, "getContentResolver", "()Landroid/content/ContentResolver;", &[])
-                    .l()
+                    .and_then(|r| r.l())
                     .map_err(|e| format!("resolver: {}", e))?;
 
                 // Uri.parse
@@ -323,7 +337,7 @@ pub fn read_uri_bytes(uri: &str) -> Result<(Vec<u8>, String, String), String> {
                         "(Ljava/lang/String;)Landroid/net/Uri;",
                         &[JValue::Object(&juri_str)],
                     )
-                    .l()
+                    .and_then(|r| r.l())
                     .map_err(|e| e.to_string())?;
 
                 // display name
@@ -351,13 +365,17 @@ pub fn read_uri_bytes(uri: &str) -> Result<(Vec<u8>, String, String), String> {
                         .and_then(|r| r.z())
                         .unwrap_or(false);
                     if moved {
-                        if let Ok(j) = env
+                        if let Some(display) = env
                             .call_method(&cursor, "getString", "(I)Ljava/lang/String;", &[JValue::Int(0)])
                             .and_then(|r| r.l())
+                            .ok()
+                            .and_then(|j| {
+                                let s = jni::objects::JString::from(j);
+                                env.get_string(&s).ok().map(|g| g.to_string_lossy().to_string())
+                            })
                         {
-                            let s = jni::objects::JString::from(j);
-                            if let Ok(g) = env.get_string(&s) {
-                                name = g.to_string_lossy().to_string();
+                            if !display.is_empty() {
+                                name = display;
                             }
                         }
                     }
@@ -378,7 +396,7 @@ pub fn read_uri_bytes(uri: &str) -> Result<(Vec<u8>, String, String), String> {
                 // openInputStream → ByteArrayOutputStream → toByteArray
                 let istream = env
                     .call_method(&cr, "openInputStream", "(Landroid/net/Uri;)Ljava/io/InputStream;", &[JValue::Object(&juri)])
-                    .l()
+                    .and_then(|r| r.l())
                     .map_err(|e| format!("open: {}", e))?;
                 let baos = env
                     .new_object("java/io/ByteArrayOutputStream", "()V", &[])
@@ -398,7 +416,7 @@ pub fn read_uri_bytes(uri: &str) -> Result<(Vec<u8>, String, String), String> {
                 let _ = env.call_method(&istream, "close", "()V", &[]);
                 let bytes = env
                     .call_method(&baos, "toByteArray", "()[B", &[])
-                    .l()
+                    .and_then(|r| r.l())
                     .map_err(|e| e.to_string())?;
                 let arr = jni::objects::JByteArray::from(bytes);
                 let elems = env.convert_byte_array(&arr).map_err(|e| e.to_string())?;
