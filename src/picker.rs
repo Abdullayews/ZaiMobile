@@ -393,15 +393,15 @@ pub fn read_uri_bytes(uri: &str) -> Result<(Vec<u8>, String, String), String> {
                     })
                     .unwrap_or_else(|| "application/octet-stream".into());
 
-                // openInputStream → ByteArrayOutputStream → toByteArray
+                // openInputStream → 64KB çünklərlə birbaşa Rust Vec-ə
+                // (ByteArrayOutputStream yox → 60MB faylda ~3 əlavə surət yox)
                 let istream = env
                     .call_method(&cr, "openInputStream", "(Landroid/net/Uri;)Ljava/io/InputStream;", &[JValue::Object(&juri)])
                     .and_then(|r| r.l())
                     .map_err(|e| format!("open: {}", e))?;
-                let baos = env
-                    .new_object("java/io/ByteArrayOutputStream", "()V", &[])
-                    .map_err(|e| e.to_string())?;
+                let mut out: Vec<u8> = Vec::new();
                 let buf = env.new_byte_array(65536).map_err(|e| e.to_string())?;
+                let mut tmp: Vec<u8> = Vec::with_capacity(65536);
                 loop {
                     let n = env
                         .call_method(&istream, "read", "([B)I", &[JValue::Object(&buf)])
@@ -410,17 +410,14 @@ pub fn read_uri_bytes(uri: &str) -> Result<(Vec<u8>, String, String), String> {
                     if n <= 0 {
                         break;
                     }
-                    env.call_method(&baos, "write", "([BII)V", &[JValue::Object(&buf), JValue::Int(0), JValue::Int(n)])
-                        .map_err(|e| e.to_string())?;
+                    // GetByteArrayRegion: Java → Rust birbaşa, aralıq surətsiz
+                    tmp.resize(n as usize, 0);
+                    env.get_byte_array_region(&buf, 0, n, &mut tmp)
+                        .map_err(|e| format!("copy: {}", e))?;
+                    out.extend_from_slice(&tmp);
                 }
                 let _ = env.call_method(&istream, "close", "()V", &[]);
-                let bytes = env
-                    .call_method(&baos, "toByteArray", "()[B", &[])
-                    .and_then(|r| r.l())
-                    .map_err(|e| e.to_string())?;
-                let arr = jni::objects::JByteArray::from(bytes);
-                let elems = env.convert_byte_array(&arr).map_err(|e| e.to_string())?;
-                Ok((elems, name, mime))
+                Ok((out, name, mime))
             })();
             r
         })

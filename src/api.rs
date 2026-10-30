@@ -5,7 +5,12 @@
 use serde_json::{json, Value};
 use std::time::Duration;
 
-pub const BASE: &str = "https://chat.z.ai";
+/// Baza URL — test/mock üçün ZAI_BASE env ilə üstələnə bilər.
+pub fn base() -> &'static str {
+    static B: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    B.get_or_init(|| std::env::var("ZAI_BASE").unwrap_or_else(|_| "https://chat.z.ai".into()))
+}
+
 pub const FE_VERSION: &str = "prod-fe-1.1.123";
 pub const MOBILE_UA: &str = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36";
 
@@ -21,7 +26,57 @@ pub fn now_ms() -> u64 {
 }
 
 pub fn gen_uuid() -> String {
-    uuid::Uuid::new_v4().to_string()
+    // uuid crate-inə ehtiyac yoxdur: v4 formatında unikal id (zaman + sayğac +
+    // process + thread-local xorshift). Unikallıq — bütün istifadə yerləri üçün
+    // (message id, requestId, session_id) kifayətdir.
+    use std::cell::Cell;
+    thread_local! {
+        static STATE: Cell<u64> = const { Cell::new(0) };
+        static COUNTER: Cell<u64> = const { Cell::new(0) };
+    }
+    let mut x = STATE.with(|s| {
+        let mut v = s.get();
+        if v == 0 {
+            v = now_ms() ^ ((std::process::id() as u64) << 32) ^ 0x9E3779B97F4A7C15;
+        }
+        v ^= v << 13;
+        v ^= v >> 7;
+        v ^= v << 17;
+        s.set(v);
+        v
+    });
+    let ctr = COUNTER.with(|c| {
+        let n = c.get().wrapping_add(1);
+        c.set(n);
+        n
+    });
+    x ^= ctr.wrapping_mul(0xBF58476D1CE4E5B9);
+    let h = format!("{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
+        (x as u32),
+        ((x >> 32) as u16),
+        (((x >> 48) ^ ctr) as u16),
+        (((x >> 19) ^ 0xB) as u16),
+        x.rotate_left(29) & 0xFFFF_FFFF_FFFF);
+    h
+}
+
+/// Retry gecikməsinə ±20% jitter (birdən çox klientin sinxron "thundering
+/// herd" retry-larının qarşısını alır)
+pub fn jitter_ms(ms: u64) -> u64 {
+    use std::cell::Cell;
+    thread_local! {
+        static J: Cell<u64> = const { Cell::new(0x243F6A8885A308D3) };
+    }
+    let f = J.with(|j| {
+        let mut v = j.get();
+        v ^= v << 13;
+        v ^= v >> 7;
+        v ^= v << 17;
+        j.set(v);
+        (v % 1000) as f64 / 1000.0 // 0..1
+    });
+    let delta = (ms as f64 * 0.2) as u64;
+    ms + (f * (2 * delta) as f64) as u64 - delta
 }
 
 /// URLSearchParams (application/x-www-form-urlencoded) kodlaşdırması
@@ -66,12 +121,12 @@ fn hmac_sha256_hex(key: &[u8], msg: &[u8]) -> String {
         opad[i] ^= k[i];
     }
     let mut inner = Sha256::new();
-    inner.update(&ipad);
+    inner.update(ipad);
     inner.update(msg);
     let inner_hash = inner.finalize();
     let mut outer = Sha256::new();
-    outer.update(&opad);
-    outer.update(&inner_hash);
+    outer.update(opad);
+    outer.update(inner_hash);
     outer.finalize().iter().map(|b| format!("{:02x}", b)).collect()
 }
 
@@ -213,7 +268,7 @@ impl Client {
             .header("X-Device-ID", &self.device_id)
             .header("X-FE-Version", FE_VERSION)
             .header("Accept-Language", "en-US")
-            .header("Origin", BASE)
+            .header("Origin", base())
             .header("Referer", "https://chat.z.ai/")
     }
 
@@ -239,7 +294,7 @@ impl Client {
                 let body = resp.text().unwrap_or_default();
                 if body.contains("<!doctype") || body.contains("<html") {
                     last_err = format!("WAF block (HTTP {})", status);
-                    std::thread::sleep(Duration::from_millis(delay as u64 * 1000));
+                    std::thread::sleep(Duration::from_millis(jitter_ms((delay * 1000.0) as u64)));
                     delay = (delay * 1.35).min(9.0);
                     continue;
                 }
@@ -257,13 +312,13 @@ impl Client {
 
     /// Ana səhifə — WAF cookie-lərini (acw_tc) almaq üçün
     pub fn warm_up_home(&self) {
-        let _ = self.req(reqwest::Method::GET, &format!("{}/", BASE)).send();
+        let _ = self.req(reqwest::Method::GET, &format!("{}/", base())).send();
     }
 
     /// Qonaq tokeni: GET /api/v1/auths/
     pub fn guest_auth(&self) -> Result<AuthInfo, String> {
         let resp = self.send_with_retry(
-            || self.req(reqwest::Method::GET, &format!("{}/api/v1/auths/", BASE)),
+            || self.req(reqwest::Method::GET, &format!("{}/api/v1/auths/", base())),
             6,
         )?;
         let status = resp.status();
@@ -283,7 +338,7 @@ impl Client {
     pub fn signin(&self, email: &str, password: &str) -> Result<AuthInfo, String> {
         let resp = self.send_with_retry(
             || {
-                self.req(reqwest::Method::POST, &format!("{}/api/v1/auths/signin", BASE))
+                self.req(reqwest::Method::POST, &format!("{}/api/v1/auths/signin", base()))
                     .header("Content-Type", "application/json")
                     .json(&json!({"email": email, "password": password}))
             },
@@ -313,7 +368,7 @@ impl Client {
     pub fn verify_token(&self, token: &str) -> Result<AuthInfo, String> {
         let resp = self.send_with_retry(
             || {
-                self.req(reqwest::Method::GET, &format!("{}/api/v1/auths/", BASE))
+                self.req(reqwest::Method::GET, &format!("{}/api/v1/auths/", base()))
                     .header("Authorization", format!("Bearer {}", token))
             },
             6,
@@ -338,7 +393,7 @@ impl Client {
     pub fn models(&self, token: &str, is_guest: bool) -> Result<Vec<ModelInfo>, String> {
         let resp = self.send_with_retry(
             || {
-                self.req(reqwest::Method::GET, &format!("{}/api/models", BASE))
+                self.req(reqwest::Method::GET, &format!("{}/api/models", base()))
                     .header("Authorization", format!("Bearer {}", token))
             },
             6,
@@ -378,7 +433,7 @@ impl Client {
             || {
                 self.req(
                     reqwest::Method::GET,
-                    &format!("{}/api/v1/chats/?page=1&type=default", BASE),
+                    &format!("{}/api/v1/chats/?page=1&type=default", base()),
                 )
                 .header("Authorization", format!("Bearer {}", token))
             },
@@ -406,7 +461,7 @@ impl Client {
     pub fn chat_detail(&self, token: &str, id: &str) -> Result<Value, String> {
         let resp = self.send_with_retry(
             || {
-                self.req(reqwest::Method::GET, &format!("{}/api/v1/chats/{}", BASE, id))
+                self.req(reqwest::Method::GET, &format!("{}/api/v1/chats/{}", base(), id))
                     .header("Authorization", format!("Bearer {}", token))
             },
             6,
@@ -419,7 +474,7 @@ impl Client {
     pub fn chat_delete(&self, token: &str, id: &str) -> Result<(), String> {
         let resp = self.send_with_retry(
             || {
-                self.req(reqwest::Method::DELETE, &format!("{}/api/v1/chats/{}", BASE, id))
+                self.req(reqwest::Method::DELETE, &format!("{}/api/v1/chats/{}", base(), id))
                     .header("Authorization", format!("Bearer {}", token))
             },
             4,
@@ -454,7 +509,7 @@ impl Client {
         }
         let resp = self.send_with_retry(
             || {
-                self.req(reqwest::Method::POST, &format!("{}/api/v1/chats/new", BASE))
+                self.req(reqwest::Method::POST, &format!("{}/api/v1/chats/new", base()))
                     .header("Authorization", format!("Bearer {}", token))
                     .header("Content-Type", "application/json")
                     .header("Accept", "application/json")
@@ -480,7 +535,7 @@ impl Client {
         let chat = chat_new_object(prompt, model, user_msg_id);
         let resp = self.send_with_retry(
             || {
-                self.req(reqwest::Method::POST, &format!("{}/api/v1/chats/new", BASE))
+                self.req(reqwest::Method::POST, &format!("{}/api/v1/chats/new", base()))
                     .header("Authorization", format!("Bearer {}", token))
                     .header("Content-Type", "application/json")
                     .header("Accept", "application/json")
@@ -506,7 +561,7 @@ impl Client {
         let id = chat_obj["id"].as_str().unwrap_or("").to_string();
         let resp = self.send_with_retry(
             || {
-                self.req(reqwest::Method::POST, &format!("{}/api/v1/chats/{}", BASE, id))
+                self.req(reqwest::Method::POST, &format!("{}/api/v1/chats/{}", base(), id))
                     .header("Authorization", format!("Bearer {}", token))
                     .header("Content-Type", "application/json")
                     .json(&json!({ "chat": chat_obj }))
@@ -540,7 +595,12 @@ impl Client {
     }
     /// Fayl yüklə: POST /api/v1/storage/pfs/files/upload (multipart "file")
     /// Cavab: {code:0, data:{file:{id, filename, type, meta:{size}, ...}}}
-    pub fn upload_file(&self, token: &str, bytes: &[u8], filename: &str, mime: &str) -> Result<UploadedFile, String> {
+    pub fn upload_file(&self, token: &str, bytes: Vec<u8>, filename: &str, mime: &str) -> Result<UploadedFile, String> {
+        // Böyük şəkillər yükləmədən əvvəl endirilir (RAM/trafik qənaəti)
+        let (bytes, mime, filename) = maybe_downscale_image(bytes, mime, filename);
+        let bytes: &[u8] = &bytes;
+        let mime: &str = &mime;
+        let filename: &str = &filename;
         let resp = self.send_with_retry(
             || {
                 let part = reqwest::blocking::multipart::Part::bytes(bytes.to_vec())
@@ -548,7 +608,7 @@ impl Client {
                     .mime_str(mime)
                     .unwrap_or_else(|_| reqwest::blocking::multipart::Part::bytes(bytes.to_vec()).file_name(filename.to_string()));
                 let form = reqwest::blocking::multipart::Form::new().part("file", part);
-                self.req(reqwest::Method::POST, &format!("{}/api/v1/storage/pfs/files/upload", BASE))
+                self.req(reqwest::Method::POST, &format!("{}/api/v1/storage/pfs/files/upload", base()))
                     .header("Authorization", format!("Bearer {}", token))
                     .header("Accept", "application/json")
                     .multipart(form)
@@ -580,6 +640,54 @@ impl Client {
             direct_url: f["direct_url"].as_str().unwrap_or("").to_string(),
         })
     }
+}
+
+/// Böyük şəkli endir (downscale): >1MB PNG/JPEG və tərəflərindən biri
+/// >2048px → 2048px-ə sığdır, JPEG q82. Yalnız nəticə kiçikdirsə qəbul.
+fn maybe_downscale_image(bytes: Vec<u8>, mime: &str, filename: &str) -> (Vec<u8>, String, String) {
+    const MAX_SIDE: u32 = 2048;
+    const THRESHOLD: usize = 1024 * 1024;
+    let keep = |b: Vec<u8>| (b, mime.to_string(), filename.to_string());
+    if !mime.starts_with("image/") || mime == "image/gif" || bytes.len() <= THRESHOLD {
+        return keep(bytes);
+    }
+    let dims = image::ImageReader::with_format(std::io::Cursor::new(&bytes), image::ImageFormat::Png)
+        .into_dimensions()
+        .ok()
+        .or_else(|| {
+            image::ImageReader::with_format(std::io::Cursor::new(&bytes), image::ImageFormat::Jpeg)
+                .into_dimensions()
+                .ok()
+        });
+    let (w, h) = match dims {
+        Some(d) => d,
+        None => return keep(bytes),
+    };
+    if w <= MAX_SIDE && h <= MAX_SIDE {
+        return keep(bytes);
+    }
+    let Ok(img) = image::load_from_memory(&bytes) else {
+        return keep(bytes);
+    };
+    let scaled = img.thumbnail(MAX_SIDE, MAX_SIDE);
+    let mut out = std::io::Cursor::new(Vec::new());
+    if scaled.write_to(&mut out, image::ImageFormat::Jpeg).is_err() {
+        return keep(bytes);
+    }
+    let out = out.into_inner();
+    if out.len() >= bytes.len() {
+        return keep(bytes);
+    }
+    eprintln!(
+        "[upload] şəkil endirildi: {}x{} ({}KB) → {}x{} ({}KB)",
+        w, h, bytes.len() / 1024, scaled.width(), scaled.height(), out.len() / 1024
+    );
+    let name = if filename.to_ascii_lowercase().ends_with(".png") {
+        format!("{}.jpg", filename.trim_end_matches(".png"))
+    } else {
+        filename.to_string()
+    };
+    (out, "image/jpeg".to_string(), name)
 }
 
 /// Yüklənmiş fayl məlumatı

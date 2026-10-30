@@ -55,8 +55,26 @@ pub fn load() -> Persisted {
     }
 }
 
+/// ATOMİK yazma: tmp fayl + fsync + rename. Elektrik kəsilməsi/zorla öldürülmə
+/// zamanı state.json yarımçıq qalmır (token itirilmir). Yazma tezliyi aşağıdır
+/// (yalnız auth/model/effort dəyişəndə) — debounce lazım deyil.
 pub fn save(p: &Persisted) {
-    if let Ok(s) = serde_json::to_string_pretty(p) {
-        let _ = std::fs::write(state_path(), s);
+    let path = state_path();
+    let tmp = data_dir().join("state.json.tmp");
+    let s = match serde_json::to_string_pretty(p) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let ok = std::fs::write(&tmp, s)
+        .and_then(|_| {
+            // durability: diskə düşsün (tokenin itməməsi üçün)
+            let f = std::fs::File::open(&tmp)?;
+            f.sync_all()
+        })
+        .and_then(|_| std::fs::rename(&tmp, &path))
+        .is_ok();
+    if !ok {
+        // fallback: birbaşa yaz (ən pis hal köhnə davranış)
+        let _ = std::fs::write(&path, serde_json::to_string_pretty(p).unwrap_or_default());
     }
 }

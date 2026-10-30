@@ -10,17 +10,15 @@ license = "MIT"
 crate-type = ["cdylib", "lib"]
 
 [dependencies]
-# ---- Slint: Android-də xüsusi backend (Skia renderer + NativeActivity) ----
-# Hədəfə görə backend seçimi — yalnız BİR backend aktiv olur:
-#   Android: backend-android-activity-06 (native-activity + skia)
-#   Desktop: backend-winit + renderer-femtovg (preview üçün)
+# ---- Slint: hədəfə görə backend seçimi (aşağıda target-specific) ----
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
+# image: yalnız upload-öncəsi şəkil endirmə (downscale) üçün — minimum feature-lər
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 slint = { version = "=1.18.1", default-features = false, features = ["std", "compat-1-2"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls", "gzip", "cookies", "multipart"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 slint = { version = "=1.18.1", default-features = false, features = ["std", "compat-1-2", "backend-android-activity-06"] }
@@ -31,34 +29,12 @@ ndk-context = "0.1"
 slint = { version = "=1.18.1", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-femtovg"] }
 env_logger = "0.11"
 
-[target.'cfg(target_os = "android")'.dependencies.reqwest]
-version = "0.12"
-default-features = false
-features = ["blocking", "json", "rustls-tls", "gzip", "cookies", "multipart"]
-
-[target.'cfg(not(target_os = "android"))'.dependencies.reqwest]
-version = "0.12"
-default-features = false
-features = ["blocking", "json", "rustls-tls", "gzip", "cookies", "multipart"]
-
 [build-dependencies]
 slint-build = "=1.18.1"
 
-[package.metadata.android]
-build_targets = ["aarch64-linux-android"]
-
-[package.metadata.android.sdk]
-min_sdk_version = 24
-target_sdk_version = 34
-
-[package.metadata.android.application]
-label = "Z.ai"
-
-[package.metadata.android.permission]
-permissions = [
-    "android.permission.INTERNET",
-    "android.permission.ACCESS_NETWORK_STATE",
-]
+# Not: Android paket konfiqurasiyasının tək mənbəyi AndroidManifest.xml-dir
+# (CI aapt2 ilə birbaşa onu istifadə edir). minSdk=24, targetSdk=34, icazələr
+# və activity parametrləri orada saxlanılır.
 
 [profile.release]
 opt-level = 2

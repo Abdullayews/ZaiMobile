@@ -13,7 +13,7 @@ fn main() {
     let user_msg_id = zai_mobile::api::gen_uuid();
 
     // v1: saytın dəqiq formatı (general_agent + features)
-    let chat = zai_mobile::api::chat_new_object(prompt, "x-preview-l", &user_msg_id);
+    let _chat = zai_mobile::api::chat_new_object(prompt, "x-preview-l", &user_msg_id);
     let chat_id = client
         .chat_new(&auth.token, prompt, "x-preview-l", &user_msg_id)
         .expect("chat_new");
@@ -24,7 +24,7 @@ fn main() {
     let base_path = if which == "v1" { "/api/chat/completions" } else { "/api/v2/chat/completions" };
     let url = format!(
         "{}{}?{}&signature_timestamp={}",
-        zai_mobile::api::BASE, base_path, sig.url_params, sig.timestamp
+        zai_mobile::api::base(), base_path, sig.url_params, sig.timestamp
     );
     println!("URL variant: {}", which);
 

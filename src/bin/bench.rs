@@ -5,6 +5,7 @@
 //!   2. streaming simulyasiyası: N flush-də cəmi CPU
 //!   3. push_all_messages pattern-inin clone xərci (uzun söhbət)
 //!   4. state.json yazma ölçüsü
+//!
 //! Nəticələr cədvəl şəklində stdout-a çıxır.
 
 use std::time::Instant;
@@ -108,11 +109,43 @@ fn main() {
         drop(vm);
     }
     println!("  hazırkı (tam parse/flush):        cəmi {:>8.1} ms | orta {:>7.1} µs/flush | ən pis {:>7.1} µs",
-        ns_to_us(sum_full) / 1000.0, ns_to_us(sum_full) as f64 / flushes as f64, ns_to_us(worst_full));
+        ns_to_us(sum_full) / 1000.0, ns_to_us(sum_full) / flushes as f64, ns_to_us(worst_full));
     println!("  hazırkı (model qurumu/flush):     cəmi {:>8.1} ms | orta {:>7.1} µs/flush | ən pis {:>7.1} µs",
-        ns_to_us(sum_model_build) / 1000.0, ns_to_us(sum_model_build) as f64 / flushes as f64, ns_to_us(worst_model_build));
+        ns_to_us(sum_model_build) / 1000.0, ns_to_us(sum_model_build) / flushes as f64, ns_to_us(worst_model_build));
     println!("  hazırkı (tam mətn clone/flush):   cəmi {:>8.1} ms | orta {:>7.1} µs/flush",
-        ns_to_us(sum_text_clone) / 1000.0, ns_to_us(sum_text_clone) as f64 / flushes as f64);
+        ns_to_us(sum_text_clone) / 1000.0, ns_to_us(sum_text_clone) / flushes as f64);
+
+    // ---- 2b) YENİ: artımlı pipeline (parse_spanned + yalnız son blok) ----
+    println!("\n[YENİ artımlı pipeline — eyni 24KB / 120 flush]");
+    let mut stable = 0usize;
+    let mut sum_tail = 0u128;
+    let mut worst_tail = 0u128;
+    let mut model_ops = 0usize;
+    for i in 1..=flushes {
+        let upto = &text[..(i * step).min(total)];
+        let t = Instant::now();
+        let tail = &upto[stable..];
+        let p = markdown::parse_spanned(tail);
+        let n = p.blocks.len();
+        let closed = if p.open_from.is_some() { n.saturating_sub(1) } else { n };
+        match p.open_from {
+            Some(o) => stable += o,
+            None => stable = upto.len(),
+        }
+        model_ops += 1 + closed;
+        let el = t.elapsed().as_nanos();
+        sum_tail += el;
+        if el > worst_tail {
+            worst_tail = el;
+        }
+    }
+    println!("  YENİ (quyruq parse/flush):        cəmi {:>8.1} ms | orta {:>7.1} us/flush | en pis {:>7.1} us",
+        ns_to_us(sum_tail) / 1000.0, ns_to_us(sum_tail) / flushes as f64, ns_to_us(worst_tail));
+    let old_ops = 337.0;
+    let new_ops = model_ops as f64 / flushes as f64;
+    println!("  YENI (model emeliyyati/flush):    orta {:.1} ops (kohne: ~{:.0})", new_ops, old_ops);
+    println!("  -> parse CPU: {:.1}x azalma | UI sira-churn: ~{:.0}x azalma",
+        ns_to_us(sum_full) / (ns_to_us(sum_tail) + 1.0), old_ops / new_ops);
 
     // ---- 3) push_all_messages clone pattern (uzun söhbət) ----
     // RawMsg-lərın tam clone-ı (controller.rs:124 `l(&core.messages).clone()`)

@@ -15,13 +15,13 @@ fn try_variant(client: &zai_mobile::api::Client, token: &str, user_id: &str, lab
     // create chat
     let resp = client.send_with_retry(
         || {
-            use zai_mobile::api::{BASE, FE_VERSION, MOBILE_UA};
+            use zai_mobile::api::{FE_VERSION, MOBILE_UA};
             client.http
-                .request(reqwest::Method::POST, format!("{}/api/v1/chats/new", BASE))
+                .request(reqwest::Method::POST, format!("{}/api/v1/chats/new", zai_mobile::api::base()))
                 .header("User-Agent", MOBILE_UA)
                 .header("X-Device-ID", &client.device_id)
                 .header("X-FE-Version", FE_VERSION)
-                .header("Origin", BASE)
+                .header("Origin", zai_mobile::api::base())
                 .header("Referer", "https://chat.z.ai/")
                 .header("Authorization", format!("Bearer {}", token))
                 .header("Content-Type", "application/json")
@@ -48,7 +48,7 @@ fn try_variant(client: &zai_mobile::api::Client, token: &str, user_id: &str, lab
     let sig = zai_mobile::api::make_signature(prompt, token, user_id);
     let url = format!(
         "{}/api/v2/chat/completions?{}&signature_timestamp={}",
-        zai_mobile::api::BASE, sig.url_params, sig.timestamp
+        zai_mobile::api::base(), sig.url_params, sig.timestamp
     );
     let body = json!({
         "stream": true,
@@ -75,7 +75,7 @@ fn try_variant(client: &zai_mobile::api::Client, token: &str, user_id: &str, lab
         Ok(resp) => {
             let status = resp.status();
             let mut first = String::new();
-            for line in BufReader::new(resp).lines().flatten() {
+            for line in BufReader::new(resp).lines().map_while(Result::ok) {
                 let t = line.trim();
                 if t.starts_with("data:") && !t.starts_with("data: [DONE]") {
                     first = t.chars().take(180).collect();
