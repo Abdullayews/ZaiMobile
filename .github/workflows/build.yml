@@ -24,9 +24,17 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android
+          components: clippy
 
       - name: Rust keş
         uses: Swatinem/rust-cache@v2
+
+      # ---- Keyfiyyət qapıları (build-dən ƏVVƏL — xətalı kod APK-a çatmasın) ----
+      - name: Clippy (host, -D warnings)
+        run: cargo clippy --release --lib --bins -- -D warnings
+
+      - name: Testlər (host)
+        run: cargo test --release --lib
 
       # ubuntu-latest-da Android SDK hazır olur (ANDROID_HOME) — yalnız NDK lazımdır
       - name: NDK quraşdır
@@ -48,6 +56,14 @@ jobs:
           echo "build-tools: $BT | platforms: $PLAT"
           ls $ANDROID_HOME/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang
 
+      - name: Clippy (android target — JNI kodu)
+        run: |
+          export AR=$TOOLCHAIN/llvm-ar
+          export CC_aarch64_linux_android=$TOOLCHAIN/aarch64-linux-android24-clang
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$TOOLCHAIN/aarch64-linux-android24-clang
+          export RUSTFLAGS="-C link-arg=-landroid"
+          cargo clippy --release --target aarch64-linux-android --lib -- -D warnings
+
       - name: Build (aarch64-linux-android)
         run: |
           export AR=$TOOLCHAIN/llvm-ar
@@ -56,6 +72,14 @@ jobs:
           export RUSTFLAGS="-C link-arg=-landroid"
           cargo build --release --target aarch64-linux-android --lib
           ls -la target/aarch64-linux-android/release/libzai_mobile.so
+
+      - name: Ölçü hesabatı
+        run: |
+          SO=target/aarch64-linux-android/release/libzai_mobile.so
+          echo "=== HESABAT ==="
+          echo ".so: $(stat -c%s $SO) bayt ($(du -h $SO | cut -f1))"
+          echo "Assets (gömülü): $(du -sh assets | cut -f1) — fonts $(du -sh assets/fonts | cut -f1), kartlar $(du -sh assets/cards | cut -f1)"
+          echo "Bağlı asılılıq sayı: $(cargo tree --target aarch64-linux-android --prefix none 2>/dev/null | rg -o '^[a-z0-9_-]+ v' | sort -u | wc -l)"
 
       - name: APK yığ
         run: |

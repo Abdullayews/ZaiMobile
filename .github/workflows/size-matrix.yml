@@ -1,0 +1,63 @@
+name: Size Matrix (opt-level × LTO)
+
+# Profil variantlarının .so ölçüsünü paralel ölçür.
+# Məqsəd: ən yaxşı ölçü/sürət tarazlığını DATA ilə seçmək.
+# Buraxılış: workflow_dispatch (əl ilə) — adi push-larda işləmir.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: size-matrix
+  cancel-in-progress: true
+
+jobs:
+  variant:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: "opt2-thin (hazırkı)", opt: "2",  lto: "thin" }
+          - { name: "opt3-thin",          opt: "3",  lto: "thin" }
+          - { name: "opts-thin",          opt: "s",  lto: "thin" }
+          - { name: "optz-thin",          opt: "z",  lto: "thin" }
+          - { name: "opt2-fat",           opt: "2",  lto: "fat"  }
+          - { name: "opts-fat",           opt: "s",  lto: "fat"  }
+    name: ${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Rust keş
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: matrix-${{ matrix.opt }}-${{ matrix.lto }}
+
+      - name: NDK quraşdır
+        run: |
+          SDKM=$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager
+          yes | $SDKM --licenses > /dev/null || true
+          $SDKM --install "ndk;27.2.12479018" > /dev/null
+          echo "TOOLCHAIN=$ANDROID_HOME/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_ENV
+
+      - name: Build .so (${{ matrix.name }})
+        run: |
+          export AR=$TOOLCHAIN/llvm-ar
+          export CC_aarch64_linux_android=$TOOLCHAIN/aarch64-linux-android24-clang
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$TOOLCHAIN/aarch64-linux-android24-clang
+          export RUSTFLAGS="-C link-arg=-landroid"
+          export CARGO_PROFILE_RELEASE_OPT_LEVEL=${{ matrix.opt }}
+          export CARGO_PROFILE_RELEASE_LTO=${{ matrix.lto }}
+          export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1
+          export CARGO_PROFILE_RELEASE_STRIP=true
+          T0=$(date +%s)
+          cargo build --release --target aarch64-linux-android --lib
+          T1=$(date +%s)
+          SO=target/aarch64-linux-android/release/libzai_mobile.so
+          SIZE=$(stat -c%s $SO)
+          echo "RESULT|${{ matrix.name }}|${SIZE}|$((T1-T0))s" >> $GITHUB_STEP_SUMMARY
+          echo "=== ${{ matrix.name }}: ${SIZE} bayt ($((SIZE/1024)) KB) | build $((T1-T0))s ==="

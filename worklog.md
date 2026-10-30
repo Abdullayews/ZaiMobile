@@ -65,3 +65,38 @@ ui/sidebar.slint — hesab sırası (sign out / sign in)
   completion — IP işarələndiyindən captcha sorğusu (gözlənilən, təmiz IP-də olmayacaq) ⚠
 - Android target: aapt2 + NDK keçidi CI-də (eyni sxem v4.0-dan sübut olunub)
 - CI: v6.0.0-beta.N, imzalı, pre-release
+
+## 2026-10-31 — Mərhələ 1: Performans optimizasiyası (ölçüyə əsaslanan)
+
+### Baseline (host x86_64 release, 24KB cavab / 120 flush)
+- tam parse/flush: 67µs orta, 142µs ən pis | model qurumu: 16µs | mətn clone: 5µs
+- HƏR flush-da ~337 BlockRow yenidən qurulurdu (əsl jank mənbəyi)
+- push_all clone: 100 mesaj ≈ 130µs + 0.7MB RAM
+- APK 9.9MB, .so 19.38MB, assets 2.28MB (fonts 1.76), state.json 151B (nadir yazma)
+
+### Dəyişikliklər (4 commit)
+1. markdown: parse_spanned + open_from (artımlı; 7 test, hər-prefiks konsistensiyası)
+2. controller/stream: 60ms flush + quyruq parse (1.7µs — 39.9x az CPU) +
+   yalnız-son-blok model yeniləməsi (~89x az sıra churn) + Reset (kəsinti
+   bərpasında qismən mətn bug-fix) + optimistiq boot (qayıdan istifadəçi
+   şəbəkə gözləmir) + warmup paralel + qonaq sessiya davamlılığı + Arc mesajlar
+   + dot-thread qapısı + jitter
+3. api/store/picker: upload Vec-move + şəkil downscale (>1MB & >2048px →
+   2048/JPEG q82) + çünklü JNI oxu (~2x az transient RAM) + atomik state.json
+   (tmp+fsync+rename) + uuid crate silindi + reqwest dedup + ZAI_BASE
+4. sec: clipboard token yalnız açıq razılıqla (avto-signin ləğv) +
+   allowBackup=false
+
+### Nəticə (host, eyni iş yükü)
+- flush CPU: 67→1.7µs (39.9x) | model ops: 337→3.8/flush (~89x)
+- bitişdə bütün-siyahı rebuild → yalnız son sıra
+- açılış: kritik yolda 2 ardıcıl şəbəkə çağırışı → 0 (optimistiq) / 1 RTT (yeni)
+
+### CI
+- build.yml: clippy (host+android, -D warnings) + test + ölçü hesabatı addımları
+- size-matrix.yml: opt-level × LTO paralel ölçüm (workflow_dispatch)
+
+### Cihazda yoxlanmalı (adb)
+- ZAI_TIMING=1: `adb shell am start -W -n zai.mobile/android.app.NativeActivity` +
+  `adb logcat -s timing` → açılış xətti, ilk token, upload vaxtları
+- RAM/jank: `adb shell dumpsys gfxinfo zai.mobile` (axın zamanı)

@@ -401,7 +401,7 @@ pub fn read_uri_bytes(uri: &str) -> Result<(Vec<u8>, String, String), String> {
                     .map_err(|e| format!("open: {}", e))?;
                 let mut out: Vec<u8> = Vec::new();
                 let buf = env.new_byte_array(65536).map_err(|e| e.to_string())?;
-                let mut tmp: Vec<u8> = Vec::with_capacity(65536);
+                let mut tmp: Vec<i8> = Vec::with_capacity(65536);
                 loop {
                     let n = env
                         .call_method(&istream, "read", "([B)I", &[JValue::Object(&buf)])
@@ -410,11 +410,11 @@ pub fn read_uri_bytes(uri: &str) -> Result<(Vec<u8>, String, String), String> {
                     if n <= 0 {
                         break;
                     }
-                    // GetByteArrayRegion: Java → Rust birbaşa, aralıq surətsiz
+                    // GetByteArrayRegion: Java → Rust birbaşa (jbyte = i8)
                     tmp.resize(n as usize, 0);
-                    env.get_byte_array_region(&buf, 0, n, &mut tmp)
+                    env.get_byte_array_region(&buf, 0, &mut tmp)
                         .map_err(|e| format!("copy: {}", e))?;
-                    out.extend_from_slice(&tmp);
+                    out.extend(tmp.iter().map(|&b| b as u8));
                 }
                 let _ = env.call_method(&istream, "close", "()V", &[]);
                 Ok((out, name, mime))
