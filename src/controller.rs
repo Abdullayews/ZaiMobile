@@ -2,13 +2,16 @@
 //! state sinxronizasiyası, giriş axınları, əlavələr və avtomatik retry.
 
 use crate::api::{self, AuthInfo, Client, ConvSummary, ModelInfo, UploadedFile};
+use crate::markdown;
 use crate::picker::{self, MediaFile};
 use crate::store::{self, Persisted};
 use crate::stream::{self, Job, StreamEvent};
 use serde_json::Value;
 use slint::{ComponentHandle, Weak};
 use slint::Model as _;
+use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -33,10 +36,15 @@ pub struct Core {
     pub persisted: Mutex<Persisted>,
     pub chat_id: Mutex<String>,
     pub chat_title: Mutex<String>,
-    pub messages: Mutex<Vec<RawMsg>>,
+    /// Arc: push_all_messages siyahını kopyalayanda mətnlər deyil,
+    /// yalnız göstəricilər çoxalır (uzun söhbətdə MB-larla clone yox).
+    pub messages: Mutex<Vec<Arc<RawMsg>>>,
     pub current_job: Mutex<Option<Arc<Job>>>,
     pub models: Mutex<Vec<ModelInfo>>,
     pub boot_done: Mutex<bool>,
+    /// Ucuz oxunan axın bayrağı (animasiya thread-i event loop-u boş-boşuna
+    /// oyatmasın deyə)
+    pub streaming_flag: Arc<AtomicBool>,
     /// composer-dəki yüklənmiş əlavələr (upload bitmiş)
     pub uploads: Mutex<Vec<UploadedFile>>,
     /// yükləmə növbəsi gedişinə görə (status UI-da göstərilir)
@@ -59,6 +67,7 @@ impl Core {
             current_job: Mutex::new(None),
             models: Mutex::new(Vec::new()),
             boot_done: Mutex::new(false),
+            streaming_flag: Arc::new(AtomicBool::new(false)),
             uploads: Mutex::new(Vec::new()),
             upload_state: Mutex::new(Vec::new()),
         })
@@ -73,10 +82,17 @@ fn l<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     }
 }
 
+/// Açılış/axın vaxt xəttini logla (adb logcat ilə ölçmək üçün).
+/// Yalnız ZAI_TIMING=1 aktivləşir — adi istifadədə susur.
+pub(crate) fn timing_enabled() -> bool {
+    static T: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *T.get_or_init(|| std::env::var("ZAI_TIMING").ok().as_deref() == Some("1"))
+}
+
 // ---------------- UI köməkçiləri ----------------
 
 fn blocks_model(text: &str) -> slint::ModelRc<MessageBlock> {
-    let blocks = stream::blocks_of(text);
+    let blocks = markdown::parse(text);
     let vm: Rc<slint::VecModel<MessageBlock>> = Rc::new(slint::VecModel::default());
     for b in blocks {
         vm.push(MessageBlock {
@@ -120,6 +136,9 @@ fn raw_to_ui(m: &RawMsg) -> ChatMessage {
     }
 }
 
+/// Mesajların tam siyahısını UI-a köçür (yalnız açılış/göndərmə/bitirmə kimi
+/// nadir hallarda çağırılır — axın zamanı YOX). Arc sayəsində mətnlər
+/// kopyalanmur, yalnız göstəricilər.
 fn push_all_messages(core: &Core, weak: &Weak<AppWindow>) {
     let raws = l(&core.messages).clone();
     let _ = slint::invoke_from_event_loop({
@@ -132,20 +151,35 @@ fn push_all_messages(core: &Core, weak: &Weak<AppWindow>) {
                     vm.push(raw_to_ui(r));
                 }
                 g.set_messages(vm.into());
+                // axın keşi köhnə modelə işarə edir — ləğv et
+                clear_stream_cache();
             }
         }
     });
 }
 
-/// Yalnız son mesajı yenilə (axın zamanı — performans)
+/// UI thread-dəki axın-blok keşini ləğv et (model əvəzlənəndə)
+fn clear_stream_cache() {
+    STREAM_BLOCKS.with(|c| *c.borrow_mut() = None);
+}
+
+thread_local! {
+    /// (mesaj id, həmin mesajın blok VecModel-i) — yalnız UI thread-də.
+    /// Axın zamanı ChatMessage əvəzlənmir; yalnız bu modelin son sıraları yenilənir.
+    static STREAM_BLOCKS: RefCell<Option<(String, slint::ModelRc<MessageBlock>)>> =
+        const { RefCell::new(None) };
+}
+
+/// Yalnız son mesajı yenilə (axın bitişində / xəta / retry vəziyyətində)
 fn update_last_message(core: &Core, weak: &Weak<AppWindow>) {
-    let raws = l(&core.messages);
-    let last = match raws.last() {
-        Some(m) => m.clone(),
-        None => return,
+    let last = {
+        let raws = l(&core.messages);
+        match raws.last() {
+            Some(m) => m.clone(),
+            None => return,
+        }
     };
-    let count = raws.len();
-    drop(raws);
+    let count = l(&core.messages).len();
     let _ = slint::invoke_from_event_loop({
         let weak = weak.clone();
         move || {
@@ -153,8 +187,9 @@ fn update_last_message(core: &Core, weak: &Weak<AppWindow>) {
                 let g = app.global::<App>();
                 let model = g.get_messages();
                 if let Some(vm) = model.as_any().downcast_ref::<slint::VecModel<ChatMessage>>() {
-                    if vm.iter().count() == count {
+                    if vm.row_count() == count {
                         vm.set_row_data(count - 1, raw_to_ui(&last));
+                        clear_stream_cache();
                     }
                 }
             }
@@ -162,8 +197,61 @@ fn update_last_message(core: &Core, weak: &Weak<AppWindow>) {
     });
 }
 
+/// AXIN FLUSHI (performans əsası): worker tərəfdə artımlı parse olunmuş
+/// blokları UI-a tətbiq et. ChatMessage əvəzlənmir, bütün list yenidən
+/// qurulmur — yalnız son mesajın blok modelinin `base`-dən sonrakı sıraları.
+fn flush_stream_blocks(weak: &Weak<AppWindow>, msg_id: String, base: usize, blocks: Vec<markdown::Block>) {
+    let _ = slint::invoke_from_event_loop({
+        let weak = weak.clone();
+        move || {
+            let Some(app) = weak.upgrade() else { return };
+            let g = app.global::<App>();
+            let messages = g.get_messages();
+            let Some(vm) = messages.as_any().downcast_ref::<slint::VecModel<ChatMessage>>() else { return };
+            let rows = vm.row_count();
+            if rows == 0 {
+                return;
+            }
+            // keş: eyni mesaj üçün mövcud blok modeli
+            let blocks_model: slint::ModelRc<MessageBlock> = STREAM_BLOCKS.with(|c| {
+                let mut c = c.borrow_mut();
+                let hit = c.as_ref().map(|(id, _)| id == &msg_id).unwrap_or(false);
+                if hit {
+                    let (_, m) = c.as_ref().unwrap();
+                    m.clone()
+                } else {
+                    // son sıranın hazır (boş) modelini götür və ya yeni yarat
+                    let m = vm
+                        .row_data(rows - 1)
+                        .map(|msg| msg.blocks)
+                        .unwrap_or_default();
+                    *c = Some((msg_id, m.clone()));
+                    m
+                }
+            });
+            let Some(bm) = blocks_model.as_any().downcast_ref::<slint::VecModel<MessageBlock>>() else { return };
+            let n = blocks.len();
+            // artıq sıraları sondan sil (mətn Reset/kiçilmə halında)
+            let rc = bm.row_count();
+            for i in (base + n..rc).rev() {
+                bm.remove(i);
+            }
+            // base-dən etibarən tətbiq et: mövcudları yerində yenilə, yenilərini əlavə et
+            for (i, b) in blocks.into_iter().enumerate() {
+                let row = MessageBlock { kind: b.kind, text: b.text.into(), lang: b.lang.into() };
+                let idx = base + i;
+                if idx < bm.row_count() {
+                    bm.set_row_data(idx, row);
+                } else {
+                    bm.push(row);
+                }
+            }
+        }
+    });
+}
+
 fn set_streaming(core: &Core, weak: &Weak<AppWindow>, on: bool) {
-    let _ = core;
+    core.streaming_flag.store(on, Ordering::Relaxed);
     let _ = slint::invoke_from_event_loop({
         let weak = weak.clone();
         move || {
@@ -268,7 +356,7 @@ fn spawn_load_models(core: Arc<Core>, weak: Weak<AppWindow>) {
             return;
         }
         *l(&core.models) = models.clone();
-        let idx = (*l(&core.persisted)).model_index.min(models.len() - 1);
+        let idx = l(&core.persisted).model_index.min(models.len() - 1);
         let m = &models[idx];
         let items: Vec<ModelItem> = models
             .iter()
@@ -344,7 +432,7 @@ fn spawn_load_conversations(core: Arc<Core>, weak: Weak<AppWindow>) {
         let active_id = l(&core.chat_id).clone();
         let items: Vec<ConvItem> = {
             let mut c = convs;
-            c.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+            c.sort_by_key(|x| std::cmp::Reverse(x.updated_at));
             c.iter()
                 .map(|x| ConvItem {
                     id: x.id.clone().into(),
@@ -394,54 +482,95 @@ fn rel_time(ts: i64) -> String {
 
 // ---------------- Boot ----------------
 
+/// Açılış: İLK İNTERAKTİV KADR şəbəkəni GÖZLƏMİR.
+/// 1) Saxlanmış sessiya (varsa) dərhal tətbiq olunur → chat açılır.
+/// 2) Token etibarlılığı FON-DA yoxlanılır; etibarsızdırsa qonaq fallback
+///    (əvvəlki davranış) + "Session expired" toast.
+/// 3) WAF warm-up ayrı thread-də (kritik yol deyil).
+/// 4) Modellər və tarixçə fon-da yüklənir.
 fn spawn_boot(core: Arc<Core>, weak: Weak<AppWindow>) {
     std::thread::spawn(move || {
-        // WAF cookie-ləri + paralel başlanğıc — açılış sürəti üçün qısa tut
-        core.client.warm_up_home();
-
+        let t0 = Instant::now();
         let saved = l(&core.persisted).clone();
-        let mut auth: Option<AuthInfo> = None;
-        let mut token_invalid = false;
 
-        // 1) saxlanmış etibarlı token?
-        if !saved.token.is_empty() && !saved.is_guest {
-            match core.client.verify_token(&saved.token) {
-                Ok(a) => auth = Some(a),
-                Err(_) => token_invalid = true,
-            }
+        // WAF cookie-ləri fon-da — açılış yolunda deyil
+        {
+            let c = core.clone();
+            std::thread::spawn(move || c.client.warm_up_home());
         }
-        // 2) qonaq
-        if auth.is_none() {
-            match core.client.guest_auth() {
-                Ok(a) => auth = Some(a),
-                Err(e) => {
-                    let msg = format!("Network error: {}", e);
-                    banner(&weak, &msg);
-                    std::thread::sleep(Duration::from_secs(6));
+
+        // Optimistiq sessiya: saxlanmış token dərhal UI-a tətbiq olunur.
+        if !saved.token.is_empty() {
+            let a = AuthInfo {
+                token: saved.token.clone(),
+                user_id: saved.user_id.clone(),
+                user_name: {
+                    let n = saved.user_name.clone();
+                    if n.is_empty() { "Guest".into() } else { n }
+                },
+                is_guest: saved.is_guest,
+            };
+            apply_auth(&core, &weak, &a);
+
+            // İlk ekran DƏRHAL (qayıdan istifadəçi — şəbəkə gözləmirdən asılı deyil)
+            let _ = slint::invoke_from_event_loop({
+                let weak = weak.clone();
+                move || {
+                    if let Some(app) = weak.upgrade() {
+                        app.global::<App>().set_booting(false);
+                    }
+                }
+            });
+            *l(&core.boot_done) = true;
+            if timing_enabled() {
+                eprintln!("[timing] ilk ekran hazır: {:?} (optimistiq sessiya)", t0.elapsed());
+            }
+
+            // fon-da yoxla
+            match core.client.verify_token(&saved.token) {
+                Ok(a) => {
+                    apply_auth(&core, &weak, &a);
+                }
+                Err(_) => {
                     match core.client.guest_auth() {
-                        Ok(a) => auth = Some(a),
+                        Ok(a) => {
+                            apply_auth(&core, &weak, &a);
+                            if !saved.is_guest {
+                                toast(&weak, "Session expired — please sign in");
+                            }
+                        }
                         Err(_) => {
-                            let _ = slint::invoke_from_event_loop({
-                                let weak = weak.clone();
-                                move || {
-                                    if let Some(app) = weak.upgrade() {
-                                        app.global::<App>().set_booting(false);
-                                    }
-                                }
-                            });
-                            return;
+                            banner(&weak, "Network error — working offline.");
                         }
                     }
                 }
             }
+            spawn_load_models(core.clone(), weak.clone());
+            if !l(&core.persisted).is_guest {
+                spawn_load_conversations(core, weak);
+            }
+            return;
         }
-        if let Some(a) = &auth {
-            apply_auth(&core, &weak, a);
-        }
-        *l(&core.boot_done) = true;
 
-        // UI-də əvvəlcə login ekranını göstər (authed yalnız istifadəçi davam edəndə true olur).
-        // Qonaq tokeni daxili saxlanılır — istifadəçi "Skip" desə dərhal hazırdır.
+        // Sessiya yoxdur (ilk açılış): köhnə axın — splash qonaq tokeni gözləyir,
+        // sonra birbaşa chat (veb saytın özü də belə davranır)
+        let mut authed = false;
+        match core.client.guest_auth() {
+            Ok(a) => {
+                apply_auth(&core, &weak, &a);
+                authed = true;
+            }
+            Err(e) => {
+                // 6 saniyə sonra bir dəfə təkrar (əvvəlki davranış)
+                let msg = format!("Network error: {}", e);
+                banner(&weak, &msg);
+                std::thread::sleep(Duration::from_secs(6));
+                if let Ok(a) = core.client.guest_auth() {
+                    apply_auth(&core, &weak, &a);
+                    authed = true;
+                }
+            }
+        }
         let _ = slint::invoke_from_event_loop({
             let weak = weak.clone();
             move || {
@@ -450,12 +579,10 @@ fn spawn_boot(core: Arc<Core>, weak: Weak<AppWindow>) {
                 }
             }
         });
-
-        if token_invalid {
-            toast(&weak, "Session expired — please sign in");
+        *l(&core.boot_done) = true;
+        if timing_enabled() {
+            eprintln!("[timing] ilk ekran hazır: {:?} (yeni qonaq, authed={})", t0.elapsed(), authed);
         }
-
-        // Model siyahısını arxa planda qızdır (birinci istifadə üçün)
         spawn_load_models(core, weak);
     });
 }
@@ -468,7 +595,7 @@ fn now_hm() -> String {
 
 fn current_model(core: &Core) -> (String, String, usize) {
     let models = l(&core.models).clone();
-    let idx = (*l(&core.persisted)).model_index.min(models.len().saturating_sub(1));
+    let idx = l(&core.persisted).model_index.min(models.len().saturating_sub(1));
     if let Some(m) = models.get(idx) {
         (m.id.clone(), m.name.clone(), idx)
     } else {
@@ -491,7 +618,7 @@ fn effort_string(core: &Core) -> String {
     "high".into()
 }
 
-fn collect_history(msgs: &[RawMsg]) -> Vec<(String, String)> {
+fn collect_history(msgs: &[Arc<RawMsg>]) -> Vec<(String, String)> {
     msgs.iter()
         .filter(|m| !m.error && !m.text.is_empty())
         .map(|m| (m.role.clone(), m.text.clone()))
@@ -551,11 +678,14 @@ fn spawn_send(core: Arc<Core>, weak: Weak<AppWindow>, prompt: String, files: Vec
             retrying: false,
             stamp: now_hm(),
         };
-        l(&core.messages).push(um);
-        l(&core.messages).push(am);
+        l(&core.messages).push(Arc::new(um));
+        l(&core.messages).push(Arc::new(am));
         push_all_messages(&core, &weak);
         set_streaming(&core, &weak, true);
         set_phase(&weak, "");
+        if timing_enabled() {
+            eprintln!("[timing] send başladı ({} bayt mətn, {} fayl)", prompt.len(), files.len());
+        }
     }
 
     let job = Job::new();
@@ -578,6 +708,7 @@ fn spawn_send(core: Arc<Core>, weak: Weak<AppWindow>, prompt: String, files: Vec
                         {
                             let mut msgs = l(&core.messages);
                             if let Some(last) = msgs.last_mut() {
+                                let last = Arc::make_mut(last);
                                 last.text.clear();
                                 last.streaming = true;
                                 last.error = false;
@@ -601,7 +732,7 @@ fn spawn_send(core: Arc<Core>, weak: Weak<AppWindow>, prompt: String, files: Vec
                     mark_retrying(&core, &weak, true, &stream::clean_error(&e));
                     let mut delay = 2500u64;
                     for attempt in 0..3 {
-                        std::thread::sleep(Duration::from_millis(delay));
+                        std::thread::sleep(Duration::from_millis(api::jitter_ms(delay)));
                         if job.is_stopped() {
                             break;
                         }
@@ -609,6 +740,7 @@ fn spawn_send(core: Arc<Core>, weak: Weak<AppWindow>, prompt: String, files: Vec
                         {
                             let mut msgs = l(&core.messages);
                             if let Some(last) = msgs.last_mut() {
+                                let last = Arc::make_mut(last);
                                 last.text.clear();
                                 last.streaming = true;
                                 last.error = false;
@@ -644,6 +776,7 @@ fn mark_retrying(core: &Core, weak: &Weak<AppWindow>, on: bool, msg: &str) {
     {
         let mut msgs = l(&core.messages);
         if let Some(last) = msgs.last_mut() {
+            let last = Arc::make_mut(last);
             last.retrying = on;
             last.error = true;
             last.streaming = false;
@@ -652,7 +785,7 @@ fn mark_retrying(core: &Core, weak: &Weak<AppWindow>, on: bool, msg: &str) {
             }
         }
     }
-    push_all_messages(core, weak);
+    update_last_message(core, weak);
 }
 
 fn run_send(core: &Arc<Core>, weak: &Weak<AppWindow>, prompt: &str, files: &[UploadedFile], job: &Arc<Job>) -> Result<(), String> {
@@ -683,26 +816,67 @@ fn run_send(core: &Arc<Core>, weak: &Weak<AppWindow>, prompt: &str, files: &[Upl
     let mut chat_id = l(&core.chat_id).clone();
     let chat_title = l(&core.chat_title).clone();
     let is_first = chat_id.is_empty();
+    let flush_id = assistant_msg_id.clone();
 
-    // Axın zamanı fasiləsiz yeniləmə üçün throttle
+    // Axın zamanı fasiləsiz yeniləmə üçün: 60 ms pəncərə + ARTIMLILIQ.
+    // stable = son açıq bloqun bayt ofseti (yalnız quyruq parse olunur),
+    // base   = bağlanmış blok sayı (UI modelində tətbiq başlanğıcı).
+    let t_send = Instant::now();
     let mut last_push = Instant::now() - Duration::from_secs(1);
     let mut phase_now = String::new();
+    let mut stable = 0usize;
+    let mut base = 0usize;
+    let mut first_delta = true;
 
     let core2 = core.clone();
     let weak2 = weak.clone();
     let mut emit = |ev: StreamEvent| {
         match ev {
             StreamEvent::Delta(d) => {
+                if first_delta {
+                    first_delta = false;
+                    if timing_enabled() {
+                        eprintln!("[timing] ilk token gecikməsi (client): {:?}", t_send.elapsed());
+                    }
+                }
                 {
                     let mut msgs = l(&core2.messages);
                     if let Some(last) = msgs.last_mut() {
-                        last.text.push_str(&d);
+                        Arc::make_mut(last).text.push_str(&d);
                     }
                 }
-                if last_push.elapsed() >= Duration::from_millis(90) {
+                if last_push.elapsed() >= Duration::from_millis(60) {
                     last_push = Instant::now();
-                    update_last_message(&core2, &weak2);
+                    // ARTIMLILIQ: yalnız 'stable'-dan sonrakı quyruq parse olunur
+                    let mut out_blocks: Vec<markdown::Block> = Vec::new();
+                    let mut out_base = 0usize;
+                    {
+                        let msgs = l(&core2.messages);
+                        if let Some(last) = msgs.last() {
+                            if last.text.len() > stable {
+                                let tail = &last.text[stable..];
+                                let p = markdown::parse_spanned(tail);
+                                let n = p.blocks.len();
+                                let closed = if p.open_from.is_some() { n.saturating_sub(1) } else { n };
+                                out_blocks = p.blocks.into_iter().map(|sb| sb.block).collect();
+                                match p.open_from {
+                                    Some(o) => stable += o,
+                                    None => stable = last.text.len(),
+                                }
+                                out_base = base;
+                                base += closed;
+                            }
+                        }
+                    }
+                    if !out_blocks.is_empty() {
+                        flush_stream_blocks(&weak2, flush_id.clone(), out_base, out_blocks);
+                    }
                 }
+            }
+            StreamEvent::Reset => {
+                // axın sıfırdan başlayır (şəbəkə kəsintisi bərpası) — sabitləri sıfırla
+                stable = 0;
+                base = 0;
             }
             StreamEvent::Phase(p) => {
                 if p != phase_now {
@@ -734,6 +908,13 @@ fn run_send(core: &Arc<Core>, weak: &Weak<AppWindow>, prompt: &str, files: &[Upl
         job,
         &mut emit,
     );
+    drop(emit);
+    if timing_enabled() {
+        eprintln!("[timing] axın bitdi: {:?} ({} bayt)", t_send.elapsed(), {
+            let msgs = l(&core.messages);
+            msgs.last().map(|m| m.text.len()).unwrap_or(0)
+        });
+    }
 
     match result {
         Ok(()) => {
@@ -748,11 +929,13 @@ fn run_send(core: &Arc<Core>, weak: &Weak<AppWindow>, prompt: &str, files: &[Upl
     }
 }
 
-/// Axını bitir: son mesajı final vəziyyətə sal
+/// Axını bitir: son mesajı final vəziyyətə sal (yalnız son sıra yenilənir —
+/// bütün siyahı deyil)
 fn finish_stream(core: &Core, weak: &Weak<AppWindow>, is_error: bool, error_text: &str) {
     {
         let mut msgs = l(&core.messages);
         if let Some(last) = msgs.last_mut() {
+            let last = Arc::make_mut(last);
             if is_error {
                 last.error = true;
                 last.text = error_text.to_string();
@@ -763,7 +946,7 @@ fn finish_stream(core: &Core, weak: &Weak<AppWindow>, is_error: bool, error_text
     set_phase(weak, "");
     set_streaming(core, weak, false);
     *l(&core.current_job) = None;
-    push_all_messages(core, weak);
+    update_last_message(core, weak);
 }
 
 // ---------------- Söhbət açma ----------------
@@ -866,7 +1049,7 @@ fn spawn_open_conversation(core: Arc<Core>, weak: Weak<AppWindow>, id: String) {
                 }
                 *l(&core.chat_id) = id;
                 *l(&core.chat_title) = title.clone();
-                *l(&core.messages) = raws;
+                *l(&core.messages) = raws.into_iter().map(Arc::new).collect();
                 let _ = slint::invoke_from_event_loop({
                     let weak = weak.clone();
                     let title2 = title;
@@ -965,14 +1148,21 @@ fn spawn_pick_file(core: Arc<Core>, weak: Weak<AppWindow>, uri: String) {
             toast(&weak, "File too large (max 60 MB)");
             return;
         }
-        // 2) upload — statusu «yüklənir» kimi göstər
+        // 2) upload — statusu «yüklənir» kimi göstər (bytes KÖÇÜRÜLÜR — clone yox)
         {
             let mut st = l(&core.upload_state);
             st.push((name.clone(), 0));
         }
         refresh_attachment_ui(&core, &weak);
-        match core.client.upload_file(&token, &bytes, &name, &mime) {
+        let t_up = Instant::now();
+        if timing_enabled() {
+            eprintln!("[timing] upload başladı: {} ({} bayt)", name, bytes.len());
+        }
+        match core.client.upload_file(&token, bytes, &name, &mime) {
             Ok(mut up) => {
+                if timing_enabled() {
+                    eprintln!("[timing] upload bitdi: {:?}", t_up.elapsed());
+                }
                 if up.name.is_empty() || up.name == "file" {
                     up.name = name.clone();
                 }
@@ -1442,21 +1632,28 @@ pub fn run() {
     }
 
     // ---- dot animasiyası (axın zamanı) ----
+    // Boş vaxtda event loop oyadılmır (batareya): streaming_flag ucuz
+    // atomic oxunuşudur, yalnız axın aktiv ikən tick göndərilir.
     {
         let weak_dot = weak.clone();
+        let flag = core.streaming_flag.clone();
         std::thread::spawn(move || loop {
-            std::thread::sleep(Duration::from_millis(350));
-            let _ = slint::invoke_from_event_loop({
-                let weak = weak_dot.clone();
-                move || {
-                    if let Some(app) = weak.upgrade() {
-                        let g = app.global::<App>();
-                        if g.get_streaming() {
-                            g.set_dot_tick(g.get_dot_tick() + 1);
+            if flag.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(350));
+                let _ = slint::invoke_from_event_loop({
+                    let weak = weak_dot.clone();
+                    move || {
+                        if let Some(app) = weak.upgrade() {
+                            let g = app.global::<App>();
+                            if g.get_streaming() {
+                                g.set_dot_tick(g.get_dot_tick() + 1);
+                            }
                         }
                     }
-                }
-            });
+                });
+            } else {
+                std::thread::sleep(Duration::from_millis(1000));
+            }
         });
     }
 
@@ -1497,7 +1694,10 @@ pub fn run() {
                     let clip = clip.trim().to_string();
                     if clip != last_clip && clip.starts_with("eyJ") && clip.len() > 60 {
                         last_clip = clip.clone();
-                        // tapıldı — istifadəçiyə göstər (avtomatik yoxla)
+                        // Tapıldı — GÖSTƏR, amma avtomatik daxil olma YOX:
+                        // yalnız istifadəçi düyməyə toxunanda token istifadə olunur
+                        // (mübadilə buferi razılığı). Android 10+ fon clipboard-u
+                        // onsuz da yalnız ön plana verir.
                         let _ = slint::invoke_from_event_loop({
                             let weak = weak_cp.clone();
                             let clip = clip.clone();
@@ -1505,9 +1705,8 @@ pub fn run() {
                                 if let Some(app) = weak.upgrade() {
                                     let g = app.global::<App>();
                                     g.set_token_auto_detected(true);
-                                    g.set_token_input(clip.clone().into());
-                                    g.set_login_busy(true);
-                                    g.invoke_do_token_sign_in(clip.into());
+                                    g.set_token_input(clip.into());
+                                    g.set_login_busy(false);
                                 }
                             }
                         });

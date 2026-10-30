@@ -6,7 +6,6 @@
 //! öz threadində idarə edirik (watchdog: 150s fasilə = kəsinti sayılır).
 
 use crate::api::{self, Client, SignatureInfo, UploadedFile};
-use crate::markdown;
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -18,6 +17,9 @@ use std::time::{Duration, Instant};
 pub enum StreamEvent {
     Delta(String),
     Phase(String),
+    /// Axın sıfırdan yenidən başlayır (şəbəkə kəsintisi + avtomatik bərpa):
+    /// qismən gələn mətn silinib, render sabiti sıfırlanmalıdır.
+    Reset,
     Done,
     Error(String),
     CaptchaRequired,
@@ -187,8 +189,9 @@ pub fn run_completion(
                 if attempt >= max_attempts || job.is_stopped() {
                     return Err(inner);
                 }
+                emit(StreamEvent::Reset);
                 emit(StreamEvent::Phase("Retrying…".into()));
-                std::thread::sleep(Duration::from_millis(1200u64 + 600 * attempt as u64));
+                std::thread::sleep(Duration::from_millis(api::jitter_ms(1200 + 600 * attempt as u64)));
                 continue;
             }
             Err(e) => return Err(e),
@@ -270,7 +273,7 @@ fn run_once(
 
     let url = format!(
         "{}/api/v2/chat/completions?{}&signature_timestamp={}",
-        api::BASE, sig.url_params, sig.timestamp
+        api::base(), sig.url_params, sig.timestamp
     );
 
     // ---------- POST (WAF retry daxilidir) ----------
@@ -334,6 +337,7 @@ fn run_once(
                 emit(StreamEvent::Delta(d));
             }
             Some(StreamEvent::Phase(p)) => emit(StreamEvent::Phase(p)),
+            Some(StreamEvent::Reset) => {}
             Some(StreamEvent::Done) => got_done = true,
             Some(StreamEvent::Error(e)) => {
                 had_error = Some(e);
@@ -466,7 +470,4 @@ fn build_chat_update(
     })
 }
 
-/// Markdown bloklarını hazır formatda qaytarır (UI-yə köçürmə üçün)
-pub fn blocks_of(text: &str) -> Vec<markdown::Block> {
-    markdown::parse(text)
-}
+
