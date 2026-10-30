@@ -37,7 +37,12 @@ slint-build = "=1.18.1"
 # və activity parametrləri orada saxlanılır.
 
 [profile.release]
-opt-level = 2
+# opt-level "s": size-matrix ölçməsi (size-matrix.yml, run 41126551848) —
+# opt2 19,517,720 bayt / 205s  →  opts 19,365,240 bayt (-152KB) / 120s;
+# opt3 +338KB və ən yavaş, optz -643KB amma cihazda runtime ölçülməyib,
+# fat-LTO opt-s altında cəmi +2.5KB (dəyəri yoxdur) → "s" + thin seçilib.
+# İstilik yolunun (SSE parse 1.7µs / 60ms flush) ehtiyatı ~35,000x-dir.
+opt-level = "s"
 lto = "thin"
 strip = true
 codegen-units = 1

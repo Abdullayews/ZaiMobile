@@ -100,3 +100,36 @@ ui/sidebar.slint — hesab sırası (sign out / sign in)
 - ZAI_TIMING=1: `adb shell am start -W -n zai.mobile/android.app.NativeActivity` +
   `adb logcat -s timing` → açılış xətti, ilk token, upload vaxtları
 - RAM/jank: `adb shell dumpsys gfxinfo zai.mobile` (axın zamanı)
+
+## 2026-10-31 — Mərhələ 1.6: size-matrix qərarı + beta.29 auditı
+
+### Size-matrix nəticələri (run 41126551848, aarch64-linux-android, .so bayt)
+| Variant | .so ölçüsü | Δ (hazırkına) | Build vaxtı |
+|---|---|---|---|
+| opt2-thin (əvvəlki) | 19,517,720 | — | 205s |
+| opt3-thin | 19,856,056 | +338,336 | 209s |
+| **opts-thin (seçilib)** | **19,365,240** | **−152,480** | **120s** |
+| optz-thin | 18,875,032 | −642,688 | 173s |
+| opt2-fat | 19,518,136 | +416 | 142s |
+| opts-fat | 19,367,736 | +2,496 | 185s |
+
+**Qərar: opt-level="s", lto="thin" (codegen-units=1, strip, abort saxlanıldı)**
+- fat-LTO ölçüyə demək olar heç nə vermir (+416 bayt opt2, +2.5KB opts) → rədd
+- opt3 həm ən böyük (+338KB), həm ən yavaş build → rədd
+- optz ən kiçik (−643KB), amma runtime cihazda ölçülməyib → ehtiyatlı seçim "s";
+  istilik yolu (SSE parse 1.7µs / 60ms flush pəncərəsi) üçün ~35,000x ehtiyat var,
+  "s" vs "2" runtime fərqi bu iş yükü üçün noise səviyyəsindədir
+- Yan təsir: CI build 205s→120s (release-lar daha tez çıxır)
+
+### beta.29 auditı (2026-10-30 21:32 UTC)
+- CI 16/16 addım yaşıl: clippy host+android (-D warnings), testlər, build,
+  ölçü hesabatı, imza+verify, artifakt, release
+- APK 10,021,273 bayt (9.56MB), versionName 6.0.0-beta.29, versionCode 29,
+  V3.0 imza: CN=Z.ai Mobile, OU=Mobile, O=Abdullayews, L=Baku, C=AZ
+  (SHA-256 b08d9f43a7ab85acb60976a695f512215fd16944230e7d54d12f8a85eddf0111)
+- .so 19,534,104 bayt — CI hesabatı ilə bayt-bayt üst-üstə düşür
+- ZIP integriteti OK, 29 fayl (bütün DPI ikonlar + adaptive + monochrome),
+  APK Sig Block v2/v3 mövcud
+- Düzəlişlər: hesabatda `rg`→`grep` (runner-da ripgrep yox idi, sayı səssizcə
+  0 çıxırdı), release qeydləri clipboard razılığı əks etdirir (aae013b-dən bəri
+  avtomatik deyil)
