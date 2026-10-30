@@ -358,15 +358,28 @@ export component LoginScreen inherits Rectangle {
                         }
                     }
 
-                    if App.token-auto-detected : HorizontalLayout {
-                        spacing: 8px;
-                        IconCheck { width: 16px; height: 16px; stroke: Theme.success; stroke-width: 2.4px; y: 1px; }
-                        Text {
-                            text: "Token detected in clipboard!";
-                            color: Theme.success;
-                            font-size: 13px;
-                            font-weight: 700;
-                            font-family: Theme.font-body;
+                    if App.token-auto-detected : VerticalLayout {
+                        spacing: 10px;
+                        HorizontalLayout {
+                            spacing: 8px;
+                            IconCheck { width: 16px; height: 16px; stroke: Theme.success; stroke-width: 2.4px; y: 1px; }
+                            Text {
+                                text: "Token detected in clipboard!";
+                                color: Theme.success;
+                                font-size: 13px;
+                                font-weight: 700;
+                                font-family: Theme.font-body;
+                            }
+                        }
+                        // Razılıq düyməsi: yalnız toxunuşla token yoxlanılır
+                        PrimaryButton {
+                            label: "Sign in with detected token";
+                            busy: App.login-busy;
+                            clicked => {
+                                if (App.token-input != "") {
+                                    App.do-token-sign-in(App.token-input);
+                                }
+                            }
                         }
                     }
 

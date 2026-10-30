@@ -130,7 +130,7 @@ fn handle_line<'md>(
     }
     // başlıq
     let hcount = t.chars().take_while(|&c| c == '#').count();
-    if hcount >= 1 && hcount <= 6 && t.chars().nth(hcount) == Some(' ') {
+    if (1..=6).contains(&hcount) && t.chars().nth(hcount) == Some(' ') {
         let text = strip_inline(t[hcount + 1..].trim());
         if !text.is_empty() {
             blocks.push(SpannedBlock {
@@ -155,8 +155,8 @@ fn handle_line<'md>(
         return;
     }
     // sitat
-    if t.starts_with('>') {
-        let text = strip_inline(t[1..].trim());
+    if let Some(rest) = t.strip_prefix('>') {
+        let text = strip_inline(rest.trim());
         if !text.is_empty() {
             blocks.push(SpannedBlock {
                 start: off,

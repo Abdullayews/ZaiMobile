@@ -14,7 +14,7 @@
         android:label="Z.ai"
         android:icon="@mipmap/ic_launcher"
         android:hasCode="false"
-        android:allowBackup="true"
+        android:allowBackup="false"
         android:theme="@android:style/Theme.Material.NoActionBar">
 
         <activity
