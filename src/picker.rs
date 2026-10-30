@@ -460,7 +460,7 @@ pub fn read_clipboard_text() -> Option<String> {
                 let clip = env.call_method(&cm, "getPrimaryClip", "()Landroid/content/ClipData;", &[])?.l()?;
                 let n = env.call_method(&clip, "getItemCount", "()I", &[])?.i()?;
                 if n < 1 {
-                    return Err(jni::errors::Error::NullPtr("empty clip".into()));
+                    return Err(jni::errors::Error::NullPtr("empty clip"));
                 }
                 let item = env
                     .call_method(&clip, "getItemAt", "(I)Landroid/content/ClipData$Item;", &[JValue::Int(0)])?
