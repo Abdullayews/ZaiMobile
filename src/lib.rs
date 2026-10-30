@@ -8,7 +8,7 @@ mod clipboard;
 mod controller;
 pub mod markdown;
 mod picker;
-mod store;
+pub mod store;
 pub mod stream;
 
 /// Giriş nöqtəsi: Android (cdylib → android_main) və Desktop (main.rs bin)
