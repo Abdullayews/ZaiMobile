@@ -249,15 +249,26 @@ pub struct ConvSummary {
 
 impl Client {
     pub fn new(device_id: String) -> Result<Self, String> {
-        let http = reqwest::blocking::Client::builder()
+        let mut builder = reqwest::blocking::Client::builder()
             .user_agent(MOBILE_UA)
             .cookie_store(true)
             // SSE axını üçün ÜMUMİ timeout YOX — yalnız qoşulma limitli.
-            // Donmuş axını read-timeout (stream.rs) bərpa edir.
             .timeout(None)
             .connect_timeout(Duration::from_secs(30))
-            .build()
-            .map_err(|e| e.to_string())?;
+            // Ölü-bağlantı aşkarlanması: 60s-dən sonra keepalive zondları
+            // göndərilir; zondlar (və ya göndərilən data) 180s ACK
+            // almayarsa bağlantı xəta ilə bağlanır → bloklanan SSE oxu
+            // qayıdır → stream.rs-in RETRY bərpası işə düşür.
+            // Əvvəl bu yox idi: tam susan (black-hole) axın QALICI bloklayırdı
+            // — stream.rs-dəki 150s idle watchdog yalnız sətir GƏLƏNDƏ yoxlanır,
+            // bloklanan oxu zamanı heç vaxt çatmır. Normal «server düşünür»
+            // fasiləsində zondlar ACK alınır → yalançı kəsinti YOX.
+            .tcp_keepalive(Duration::from_secs(60));
+        #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+        {
+            builder = builder.tcp_user_timeout(Duration::from_secs(180));
+        }
+        let http = builder.build().map_err(|e| e.to_string())?;
         Ok(Client { http, device_id })
     }
 

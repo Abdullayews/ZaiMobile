@@ -31,6 +31,27 @@ pub struct RawMsg {
     pub stamp: String,
 }
 
+/// Composer-dəki əlavə: upload vəziyyəti + nəticə VAHİD strukturdadır.
+/// (Əvvəl ayrı-ayrı `uploads` + `upload_state` siyahıları var idi — UI indeksi
+/// `uploads`-a, status isə `upload_state`-ə görə düzülürdü və fərqli
+/// quruluşlarına görə silmə yanlış elementi silirdi; üstəlik pending
+/// upload-lar UI-da heç göstərilmirdi, removal isə UI modelini yeniləmirdi.)
+#[derive(Clone, Debug)]
+pub struct UploadEntry {
+    pub local_id: u64,               // unikal id (eyni adlı fayllar üçün də)
+    pub name: String,
+    pub media: String,               // image|video|doc
+    pub size: i64,
+    pub status: i32,                 // 0=yüklənir 1=hazır 2=xəta
+    pub file: Option<UploadedFile>,  // uğurlu upload nəticəsi
+}
+
+/// Yerli unikal id generatoru (composer çipləri üçün)
+static UPLOAD_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+fn next_upload_id() -> u64 {
+    UPLOAD_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 pub struct Core {
     pub client: Client,
     pub persisted: Mutex<Persisted>,
@@ -45,10 +66,8 @@ pub struct Core {
     /// Ucuz oxunan axın bayrağı (animasiya thread-i event loop-u boş-boşuna
     /// oyatmasın deyə)
     pub streaming_flag: Arc<AtomicBool>,
-    /// composer-dəki yüklənmiş əlavələr (upload bitmiş)
-    pub uploads: Mutex<Vec<UploadedFile>>,
-    /// yükləmə növbəsi gedişinə görə (status UI-da göstərilir)
-    pub upload_state: Mutex<Vec<(String, i32)>>, // (name, status 0/1/2)
+    /// composer-dəki əlavələr (vəziyyət + upload nəticəsi birlikdə)
+    pub uploads: Mutex<Vec<UploadEntry>>,
 }
 
 impl Core {
@@ -69,7 +88,6 @@ impl Core {
             boot_done: Mutex::new(false),
             streaming_flag: Arc::new(AtomicBool::new(false)),
             uploads: Mutex::new(Vec::new()),
-            upload_state: Mutex::new(Vec::new()),
         })
     }
 }
@@ -661,28 +679,23 @@ fn collect_history(msgs: &[Arc<RawMsg>]) -> Vec<(String, String)> {
         .collect()
 }
 
-/// composer-dəki əlavələri UI-da göstər (upload statusları ilə)
+/// composer-dəki əlavələri UI-da göstər (upload statusları ilə — vahid
+/// siyahıdan: pending "…", hazırsa ✓, xətaya düşərsə qırmızı ad)
 fn refresh_attachment_ui(core: &Core, weak: &Weak<AppWindow>) {
-    let uploads = l(&core.uploads).clone();
-    let states = l(&core.upload_state).clone();
+    let entries = l(&core.uploads).clone();
     let _ = slint::invoke_from_event_loop({
         let weak = weak.clone();
         move || {
             if let Some(app) = weak.upgrade() {
                 let g = app.global::<App>();
                 let vm: Rc<slint::VecModel<Attachment>> = Rc::new(slint::VecModel::default());
-                for f in &uploads {
-                    let status = states
-                        .iter()
-                        .find(|(n, _)| n == &f.name)
-                        .map(|(_, s)| *s)
-                        .unwrap_or(1);
+                for e in &entries {
                     vm.push(Attachment {
-                        id: f.id.clone().into(),
-                        name: f.name.clone().into(),
-                        media: f.media.clone().into(),
-                        status,
-                        size: api::human_size(f.size).into(),
+                        id: e.local_id.to_string().into(),
+                        name: e.name.clone().into(),
+                        media: e.media.clone().into(),
+                        status: e.status,
+                        size: api::human_size(e.size).into(),
                     });
                 }
                 g.set_attachments(vm.into());
@@ -1226,10 +1239,20 @@ fn spawn_pick_file(core: Arc<Core>, weak: Weak<AppWindow>, uri: String) {
             toast(&weak, "File too large (max 60 MB)");
             return;
         }
-        // 2) upload — statusu «yüklənir» kimi göstər (bytes KÖÇÜRÜLÜR — clone yox)
+        // 2) VAHİD siyahıda «yüklənir» vəziyyəti ilə göstər (bytes KÖÇÜRÜLÜR —
+        // clone yox). İstifadəçi faylı seçən kimi çip görünür.
+        let local_id = next_upload_id();
+        let media = api::media_kind(&mime, &name).to_string();
         {
-            let mut st = l(&core.upload_state);
-            st.push((name.clone(), 0));
+            let mut ups = l(&core.uploads);
+            ups.push(UploadEntry {
+                local_id,
+                name: name.clone(),
+                media,
+                size: bytes.len() as i64,
+                status: 0,
+                file: None,
+            });
         }
         refresh_attachment_ui(&core, &weak);
         let t_up = Instant::now();
@@ -1246,12 +1269,11 @@ fn spawn_pick_file(core: Arc<Core>, weak: Weak<AppWindow>, uri: String) {
                 }
                 {
                     let mut ups = l(&core.uploads);
-                    ups.push(up);
-                    let mut st = l(&core.upload_state);
-                    for s in st.iter_mut() {
-                        if s.0 == name {
-                            s.1 = 1;
-                        }
+                    if let Some(e) = ups.iter_mut().find(|e| e.local_id == local_id) {
+                        e.status = 1;
+                        e.size = if up.size > 0 { up.size } else { e.size };
+                        e.name = if up.name.is_empty() { e.name.clone() } else { up.name.clone() };
+                        e.file = Some(up);
                     }
                 }
                 refresh_attachment_ui(&core, &weak);
@@ -1259,25 +1281,18 @@ fn spawn_pick_file(core: Arc<Core>, weak: Weak<AppWindow>, uri: String) {
             }
             Err(e) => {
                 {
-                    let mut st = l(&core.upload_state);
-                    for s in st.iter_mut() {
-                        if s.0 == name {
-                            s.1 = 2;
-                        }
+                    let mut ups = l(&core.uploads);
+                    if let Some(e2) = ups.iter_mut().find(|e2| e2.local_id == local_id) {
+                        e2.status = 2;
                     }
                 }
                 refresh_attachment_ui(&core, &weak);
                 toast(&weak, &format!("Upload failed: {}", e));
-                // xətalı əlavəni təmizlə
+                // xətalı əlavəni təmizlə (yerli unikal id ilə — ad deyil)
                 std::thread::sleep(Duration::from_millis(1800));
                 {
                     let mut ups = l(&core.uploads);
-                    let mut st = l(&core.upload_state);
-                    let idx = st.iter().position(|(n, _)| n == &name);
-                    if let Some(i) = idx {
-                        st.remove(i);
-                    }
-                    ups.retain(|u| u.name != name);
+                    ups.retain(|e| e.local_id != local_id);
                 }
                 refresh_attachment_ui(&core, &weak);
             }
@@ -1301,7 +1316,12 @@ pub fn run() {
         let weak_c = weak.clone();
         g.on_send(move |text| {
             let t = text.trim().to_string();
-            let files = l(&core_c.uploads).clone();
+            // yalnız HAZIR (upload bitmiş) əlavələr göndərilir; pending/xətalı
+            // entry-lər atılır
+            let files: Vec<UploadedFile> = {
+                let ups = l(&core_c.uploads);
+                ups.iter().filter_map(|e| e.file.clone()).collect()
+            };
             if t.is_empty() && files.is_empty() {
                 return;
             }
@@ -1311,7 +1331,6 @@ pub fn run() {
             g.set_auto_scroll(true);
             // əlavələri göndərişə bağla, composer-i təmizlə
             *l(&core_c.uploads) = Vec::new();
-            *l(&core_c.upload_state) = Vec::new();
             g.set_attachments(Rc::new(slint::VecModel::<Attachment>::default()).into());
             spawn_send(core_c.clone(), weak_c.clone(), t, files);
         });
@@ -1657,17 +1676,26 @@ pub fn run() {
             spawn_pick_file(core_c.clone(), weak_c.clone(), uri.to_string());
         });
 
-        // əlavəni sil
-        let core_c = core.clone();
+        // əlavəni sil (UI indeksi vahid siyahıya uyğundur; yerli id ilə silinir
+        // ki, eyni adlı fayllar yanlışlıqla birlikdə silinməsin). UI dərhal
+        // yenilənir (əvvəl chip ekranda qalırdı).
+        let core_r = core.clone();
+        let weak_r = weak.clone();
         g.on_remove_attachment(move |idx| {
             let i = idx.max(0) as usize;
-            let mut ups = l(&core_c.uploads);
-            let mut st = l(&core_c.upload_state);
-            if i < ups.len() {
-                ups.remove(i);
-            }
-            if i < st.len() {
-                st.remove(i);
+            let removed = {
+                let mut ups = l(&core_r.uploads);
+                match ups.get(i) {
+                    Some(e) => {
+                        let id = e.local_id;
+                        ups.retain(|e| e.local_id != id);
+                        true
+                    }
+                    None => false,
+                }
+            };
+            if removed {
+                refresh_attachment_ui(&core_r, &weak_r);
             }
         });
 

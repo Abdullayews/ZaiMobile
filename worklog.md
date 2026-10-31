@@ -242,3 +242,38 @@ növbəti turun kontekstində).
 
 HƏLL: Reset handlerində son mesajın text-i təmizlənir və UI blokları
 dərhal yenilənir (update_last_message — köhnə bloklar gözləmədən silinir).
+
+## Loop sessiyası — İterasiya 3: ölü-bağlantı aşkarlanması + əlavə (attachment) düzəlişi
+
+PROBLEM 1 (donmuş SSE — api.rs): blocking SSE oxunda read-timeout yox idi.
+stream.rs-dəki 150s idle watchdog yalnız SƏTİR GƏLƏNDƏ yoxlanıla bilirdi —
+server qəfil susarsa (mobil şəbəkə black-hole) reader.lines() bloklayır,
+watchdown heç vaxt çatmır, axın thread-i QALICI asılı qalır (UI «streaming»
+vəziyyətində donur, stop belə işləmir).
+
+HƏLL: TCP səviyyəsində ölü-bağlantı aşkarlanması — `tcp_keepalive(60s)` +
+`tcp_user_timeout(180s)` (Linux/Android). Zondlar ACK alınmayanda bağlantı
+xəta ilə bağlanır → bloklanan oxu qayıdır → RETRY bərpası işə düşür.
+Normal «server düşünür» fasiləsində zondlar ACK alınır → yalançı kəsinti
+yoxdur. QEYD: reqwest blocking ClientBuilder-də read_timeout API-si yoxdur
+(yalnız async-də) — ona görə TCP səviyyəli həll seçildi.
+
+PROBLEM 2 (əlavələr — controller.rs): ÜÇ bir-birilə bağlı bug:
+a) `uploads` (bitmiş) və `upload_state` (pending daxil) AYRI siyahılar idi —
+   UI indeksi `uploads`-a görə idi, status `upload_state`-dən adla tapılırdı;
+   silmə eyni indekslə hər ikisindən edilirdi → fərqli quruluşlara görə
+   YANLIŞ element silinirdi (pending upload varken).
+b) Pending upload çipləri UI-da heç göstərilmirdi (istifadəçi fayl seçəndə
+   heç nə olmamış kimi görünürdü — «…» statuslu çip dead code idi).
+c) on_remove_attachment UI modelini yeniləmirdi → silinən çip ekranda
+   QALIRDI (və növbəti silmə köhnə indekslə yanlış gedirdi).
+
+HƏLL: vahid `UploadEntry { local_id, name, media, size, status, file }`
+strukturu: pending dərhal «…» çipi ilə görünür; silmə yerli unikal id ilə
+(eyni adlı fayllar təhlükəsiz); UI dərhal refresh olunur; send yalnız
+HAZIR (file=Some) entry-ləri göndərir.
+
+Yoxlama: cargo check/clippy/test (9 test) keçdi. CANLI send sınağı:
+sandbox IP-si /api/v2/chat/completions POST üçün WAF blokludur (curl:
+POST→403, GET auths→200) — mühit məhdudiyyəti, kod regressiyası deyil;
+real cihazda (fərqli IP) yoxlanmalıdır.
