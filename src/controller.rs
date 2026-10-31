@@ -842,16 +842,16 @@ fn mark_retrying(core: &Core, weak: &Weak<AppWindow>, job: &Arc<Job>, on: bool, 
 }
 
 fn run_send(core: &Arc<Core>, weak: &Weak<AppWindow>, prompt: &str, files: &[UploadedFile], job: &Arc<Job>) -> Result<(), String> {
-    // Axın zamanı gələn user/assistant mesajları (yeni göndəriş üçün)
+    // Tarixçə: son İKİ sətir yeni göndərişin özüdür (göndərilən user mesajı +
+    // boş assistant placeholder) — kontekstə daxil deyil. Əvvəlki kod bütün
+    // siyahı üzərində collect_history + truncate(len-2) edirdi; amma
+    // collect_history boş placeholder-i ZATƏN süzür → truncate əlavə olaraq
+    // son REAL assistant cavabını da kəsirdi (model öz əvvəlki cavabını
+    // görmürdü, cavabın keyfiyyəti hər növbəti turda düşürdü).
     let history: Vec<(String, String)> = {
         let msgs = l(&core.messages);
-        let mut h = collect_history(&msgs);
-        if h.len() >= 2 {
-            h.truncate(h.len() - 2);
-        } else {
-            h.clear();
-        }
-        h
+        let upto = msgs.len().saturating_sub(2);
+        collect_history(&msgs[..upto])
     };
 
     let (token, user_id) = {
@@ -934,9 +934,20 @@ fn run_send(core: &Arc<Core>, weak: &Weak<AppWindow>, prompt: &str, files: &[Upl
                 }
             }
             StreamEvent::Reset => {
-                // axın sıfırdan başlayır (şəbəkə kəsintisi bərpası) — sabitləri sıfırla
+                // Axın sıfırdan başlayır (şəbəkə kəsintisi + avtomatik bərpa):
+                // parse ofsetləri VƏ mətnin özü sıfırlanmalıdır. Əvvəl yalnız
+                // ofsetlər sıfırlanırdı → bərpa axını eyni cavabı yenidən
+                // göndərəndə mətn ikiləşirdi ("Hello" + "Hello world…").
                 stable = 0;
                 base = 0;
+                {
+                    let mut msgs = l(&core2.messages);
+                    if let Some(last) = msgs.last_mut() {
+                        Arc::make_mut(last).text.clear();
+                    }
+                }
+                // UI-da köhnə blokları dərhal təmizlə (növbəti flush ≤60ms)
+                update_last_message(&core2, &weak2);
             }
             StreamEvent::Phase(p) => {
                 if p != phase_now {
@@ -1873,4 +1884,74 @@ fn apply_auth_guest(core: &Core, weak: &Weak<AppWindow>) {
         }
     });
     let _ = core;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn msg(role: &str, text: &str, error: bool) -> Arc<RawMsg> {
+        Arc::new(RawMsg {
+            id: api::gen_uuid(),
+            role: role.into(),
+            text: text.into(),
+            files: Vec::new(),
+            streaming: false,
+            error,
+            retrying: false,
+            stamp: String::new(),
+        })
+    }
+
+    /// run_send-in tarixçə kəsmə məntiqi: son 2 sətir (yeni user + boş
+    /// placeholder) çıxılır, əvvəlki TAM turlar (assistant cavabları daxil)
+    /// kontekstdə QALIR.
+    #[test]
+    fn history_keeps_previous_assistant_answer() {
+        let msgs = vec![
+            msg("user", "1", false),
+            msg("assistant", "A1", false),
+            msg("user", "2", false),
+            msg("assistant", "A2", false),
+            msg("user", "3", false),
+            msg("assistant", "", false), // boş placeholder (streaming)
+        ];
+        let upto = msgs.len().saturating_sub(2);
+        let h = collect_history(&msgs[..upto]);
+        // "3" (yeni prompt) run_completion-ə ayrıca ötürülür — tarixçədə OLMAMALI;
+        // "A2" (son real assistant cavabı) isə QALMALI (köhnə kod onu itirirdi)
+        assert_eq!(
+            h,
+            vec![
+                ("user".to_string(), "1".to_string()),
+                ("assistant".to_string(), "A1".to_string()),
+                ("user".to_string(), "2".to_string()),
+                ("assistant".to_string(), "A2".to_string()),
+            ],
+            "son real assistant cavabı (A2) tarixçədə qalmalıdır"
+        );
+    }
+
+    /// Xətalı mesajlar (avtomatik retry göstəricisi) kontekstə düşməməlidir.
+    #[test]
+    fn history_skips_error_rows() {
+        let msgs = vec![
+            msg("user", "1", false),
+            msg("assistant", "A1", false),
+            msg("user", "2", false),
+            msg("assistant", "Server busy", true), // error — süzülür
+            msg("user", "3", false),                // yeni prompt
+            msg("assistant", "", false),             // placeholder
+        ];
+        let upto = msgs.len().saturating_sub(2);
+        let h = collect_history(&msgs[..upto]);
+        assert_eq!(
+            h,
+            vec![
+                ("user".to_string(), "1".to_string()),
+                ("assistant".to_string(), "A1".to_string()),
+                ("user".to_string(), "2".to_string()),
+            ]
+        );
+    }
 }

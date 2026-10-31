@@ -219,3 +219,26 @@ mərkəzində idi, -draw_mouse 0 ilə yox oldu).
 Yoxlama: cargo check/clippy -D warnings/testlər keçdi; desktop preview
 (Xvfb) — kartlar 25..199 və 212..386 (175px, tam en), şəkillər mərkəzdə,
 VLM audit: artefakt yoxdur.
+
+## Loop sessiyası — İterasiya 2: axın məzmun düzgünlüyü (context + bərpa)
+
+PROBLEM 1 (tarixçə kəsimi — controller.rs run_send): göndərmədən əvvəl
+collect_history(bütün messages) + truncate(len-2) edilirdi. Boş assistant
+placeholder collect_history tərəfindən ZATƏN süzülür → truncate son REAL
+assistant cavabını da kəsirdi. Nəticə: hər növbəti turda model öz əvvəlki
+cavabını KONTROKSDƏ GÖRMÜRDÜ (u1,a1,u2 + yeni prompt — a2 yox idi), cavab
+keyfiyyəti tədricən düşürdü.
+
+HƏLL: siyahının son 2 sətri (yeni user + placeholder) başdan dilimlənir:
+`collect_history(&msgs[..len-2])` → tam turlar qorunur. 2 regressiya testi
+əlavə olundu (A2-nin qalması + xətalı sətirlərin süzülməsi).
+
+PROBLEM 2 (SSE Reset ikilənməsi — controller.rs emit): şəbəkə kəsintisindən
+sonra avtomatik bərpa `StreamEvent::Reset` göndərir, handler isə yalnız
+markdown parse ofsetlərini (stable/base) sıfırlayırdı — RawMsg.text
+tƏMİZLƏNMİRDİ. Bərpa axını cavabı başdan yenidən çatdırır → mətn
+"HelloHello world…" kimi İKİLƏŞİRDİ (həm UI-da, həm copy-də, həm
+növbəti turun kontekstində).
+
+HƏLL: Reset handlerində son mesajın text-i təmizlənir və UI blokları
+dərhal yenilənir (update_last_message — köhnə bloklar gözləmədən silinir).
