@@ -228,19 +228,24 @@ component MessageRow inherits VerticalLayout {
     if msg.role == "assistant" : VerticalLayout {
         spacing: 4px;
 
-        // xəta (+retry göstəricisi)
-        if msg.error : HorizontalLayout {
-            spacing: 8px;
-            alignment: start;
-            IconAlert {
-                width: 17px; height: 17px; stroke: Theme.danger; stroke-width: 2px;
-            }
-            Text {
-                text: root.msg.retrying ? root.msg.text + "\n\nRetrying automatically…" : root.msg.text;
-                color: Theme.danger;
-                font-size: 14px;
-                font-family: Theme.font-body;
-                wrap: word-wrap;
+        // xəta (+retry göstəricisi) — bütün sətir toxunulandır: "tap to
+        // retry" mətni REAL retry işə salır (əvvəl TouchArea yox idi — yazı
+        // "toxun" deyirdi, amma toxunma işləmirdi)
+        if msg.error : TouchArea {
+            clicked => { App.retry-send(); }
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+                IconAlert {
+                    width: 17px; height: 17px; stroke: Theme.danger; stroke-width: 2px;
+                }
+                Text {
+                    text: root.msg.retrying ? root.msg.text + "\n\nRetrying automatically…" : root.msg.text;
+                    color: Theme.danger;
+                    font-size: 14px;
+                    font-family: Theme.font-body;
+                    wrap: word-wrap;
+                }
             }
         }
 

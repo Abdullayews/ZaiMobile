@@ -333,3 +333,16 @@ real cihazda (fərqli IP) yoxlanmalıdır.
    İndi uğurlu girişin üç yolunda da (email, token, clipboard-token)
    reset_conversation: mesajlar, başlıq, input, UI modeli tam təmizlənir,
    aktiv axın dayandırılır. Sign-out yolu da eyni helper-dən istifadə edir.
+
+## Loop sessiyası — İterasiya 7: "tap to retry" işləmirdi + ölü state təmizliyi
+
+1. RETRY TOXUNMASI (chat.slint + controller.rs): xəta mesajı "Tap to retry
+   manually" deyirdi, amma (a) sətirdə TouchArea YOX İDİ — toxunma heç nə
+   etmirdi; (b) on_retry_send son mesajın role=="user" olmasını gözləyirdi,
+   halbuki axının sonunda XETA ASSISTANT sətri dayanır → şərt heç vaxt
+   doğru olmurdu. İndi: xəta sətri tam toxunulandır (App.retry-send) və
+   Rust tərəfi xətalı assistant sətirlərini silib son USER mesajını
+   (əlavələri ilə) təkrar göndərir.
+
+2. Ölü state-lər (state.slint): need-refresh (heç yerde oxunmur/yazılmır)
+   və signed-in (yalnız yazılır, heç yerde oxunmur) silindi.

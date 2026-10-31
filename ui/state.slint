@@ -69,11 +69,9 @@ export global App {
     in-out property <string> banner;           // davamlı xəta lentı (chat üstündə)
     in-out property <bool> auto-scroll: true;
     in-out property <int> dot-tick;            // «düşünür» nöqtə animasiyası
-    in-out property <bool> need-refresh;
 
     // ---- giriş (login) vəziyyəti ----
     in-out property <bool> authed: false;      // login ekranı keçildi (qonaq da olsa)
-    in-out property <bool> signed-in;          // real hesabla
     in-out property <bool> is-guest: true;
     in-out property <string> user-name: "Guest";
     in-out property <int> login-step: 0;       // 0=welcome(Google/Email/Github) 1=email-form 2=captcha-fallback 3=token

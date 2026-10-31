@@ -389,7 +389,6 @@ fn apply_auth(core: &Core, weak: &Weak<AppWindow>, auth: &AuthInfo) {
                 let g = app.global::<App>();
                 g.set_user_name(name.into());
                 g.set_is_guest(guest);
-                g.set_signed_in(!guest);
                 g.set_authed(true);
                 g.set_login_busy(false);
                 g.set_login_error("".into());
@@ -1393,17 +1392,33 @@ pub fn run() {
             }
         });
 
-        // retry-send (xəta sonrası əl ilə)
+        // retry-send (xəta sonrası əl ilə — xəta sətrinə toxunma)
         let core_c = core.clone();
         let weak_c = weak.clone();
         g.on_retry_send(move || {
+            // Axının sonunda xəta ASSISTANT sətri dayanır (error=true) —
+            // əvvəlki kod son sətirin user olmasını gözləyirdi və heç nə
+            // etmirdi. İndi: xətalı assistant sətirlərini sil, son user
+            // mesajını tap, təkrar göndər (əlavələri ilə).
             let prompt = {
-                let msgs = l(&core_c.messages);
-                msgs.last()
-                    .filter(|m| m.role == "user")
-                    .map(|m| (m.text.clone(), m.files.clone()))
+                let mut msgs = l(&core_c.messages);
+                while let Some(last) = msgs.last() {
+                    if last.role == "assistant" && last.error {
+                        msgs.pop();
+                    } else {
+                        break;
+                    }
+                }
+                let p = msgs
+                    .last()
+                    .filter(|m| m.role == "user" && !m.text.is_empty())
+                    .map(|m| (m.text.clone(), m.files.clone()));
+                drop(msgs);
+                p
             };
             if let Some((p, files)) = prompt {
+                // silinən xəta sətirlərini UI-dan da yığ
+                push_all_messages(&core_c, &weak_c);
                 spawn_send(core_c.clone(), weak_c.clone(), p, files);
             }
         });
