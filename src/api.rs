@@ -642,6 +642,9 @@ impl Client {
     pub fn upload_file(&self, token: &str, bytes: Vec<u8>, filename: &str, mime: &str) -> Result<UploadedFile, String> {
         // Böyük şəkillər yükləmədən əvvəl endirilir (RAM/trafik qənaəti)
         let (bytes, mime, filename) = maybe_downscale_image(bytes, mime, filename);
+        // QEYD: blocking multipart Part::bytes Into<Cow> tələb edir — retry
+        // başına bir memcpy qaçılmazdır (60MB ≈ 20ms, şəbəkə vaxtı yanında
+        // əhəmiyyətsiz). Bytes/refcount yolu yalnız async client-də mümkündür.
         let bytes: &[u8] = &bytes;
         let mime: &str = &mime;
         let filename: &str = &filename;

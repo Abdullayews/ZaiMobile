@@ -375,3 +375,22 @@ real cihazda (fərqli IP) yoxlanmalıdır.
 
 3. İstifadəsiz 13 ikon PNG-si silindi (yalnız google/github istifadə
    olunur — Path ikonlara keçid hələ v4-də olub).
+
+## Loop sessiyası — İterasiya 10: upload ön-yoxlama + nav başlıq sinxronu
+
+1. BÖYÜK FAYL OOM QORUMASI (picker.rs + controller.rs): 60MB limiti
+   fayl TAMAMı oxunduqdan SONRA yoxlanılırdı — 500MB video əvvəlcə tam
+   RAM-a düşür, sonra rədd edilirdi (köhnə cihazlarda OOM/kill). İndi
+   read_uri_bytes _display_name ilə bir sorğuda _size DA oxuyur və
+   60MB-dən böyük faylı oxumadan rədd edir (FILE_TOO_LARGE:<size>).
+   Controller oxunuş ölçüsünü toast-da göstərir; post-oxu yoxlaması
+   (-1 halı üçün) fallback qalır.
+
+2. NAV BAŞLIQ SINXRONU (controller.rs): ilk cavabdan sonra server söhbət
+   başlığını avtomatik yaratdırır, amma nav-da "New Chat" qalırdı.
+   spawn_load_conversations aktiv söhbətin boş olmayan başlığını tapıb
+   nav + core.chat_title-a tətbiq edir.
+
+3. (Sınaqdan keçməyən optimallaşdırma ləğv edildi: blocking multipart
+   Part::bytes Bytes qəbul etmir — retry başına bir memcpy qalır,
+   ölçüsü əhəmiyyətsizdir.)

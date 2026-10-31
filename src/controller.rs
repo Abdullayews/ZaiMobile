@@ -509,20 +509,29 @@ fn spawn_load_conversations(core: Arc<Core>, weak: Weak<AppWindow>) {
             core.client.conversations(&token).unwrap_or_default()
         };
         let active_id = l(&core.chat_id).clone();
-        let items: Vec<ConvItem> = {
-            let mut c = convs;
-            c.sort_by_key(|x| std::cmp::Reverse(x.updated_at));
-            c.iter()
-                .map(|x| ConvItem {
-                    id: x.id.clone().into(),
-                    title: if x.title.is_empty() { "New Chat".into() } else { x.title.clone().into() },
-                    stamp: rel_time(x.updated_at).into(),
-                    active: x.id == active_id,
-                })
-                .collect()
-        };
+        let mut sorted = convs;
+        sorted.sort_by_key(|x| std::cmp::Reverse(x.updated_at));
+        // Aktiv söhbətin serverdəki başlığı (ilk cavabdan sonra server
+        // avtomatik yaratdırır) — nav-da köhnə "New Chat" yazısı qalmasın
+        let active_title: Option<String> = sorted
+            .iter()
+            .find(|x| x.id == active_id && !x.title.is_empty())
+            .map(|x| x.title.clone());
+        if let Some(t) = &active_title {
+            *l(&core.chat_title) = t.clone();
+        }
+        let items: Vec<ConvItem> = sorted
+            .iter()
+            .map(|x| ConvItem {
+                id: x.id.clone().into(),
+                title: if x.title.is_empty() { "New Chat".into() } else { x.title.clone().into() },
+                stamp: rel_time(x.updated_at).into(),
+                active: x.id == active_id,
+            })
+            .collect();
         let _ = slint::invoke_from_event_loop({
             let weak = weak.clone();
+            let title2 = active_title;
             move || {
                 if let Some(app) = weak.upgrade() {
                     let g = app.global::<App>();
@@ -531,6 +540,9 @@ fn spawn_load_conversations(core: Arc<Core>, weak: Weak<AppWindow>) {
                         vm.push(it);
                     }
                     g.set_conversations(vm.into());
+                    if let Some(t) = &title2 {
+                        g.set_chat_title(t.into());
+                    }
                     g.set_history_loading(false);
                 }
             }
@@ -1248,9 +1260,16 @@ fn spawn_pick_file(core: Arc<Core>, weak: Weak<AppWindow>, uri: String) {
     });
     std::thread::spawn(move || {
         let token = l(&core.persisted).token.clone();
-        // 1) oxu
+        // 1) oxu (böyük fayl _size sorğusu ilə ƏVVƏLDƏN rədd edilir —
+        // picker.rs RAM-a oxumadan yoxlayır; -1 halında aşağıdakı
+        // post-oxu yoxlaması fallback olaraq qalır)
         let (bytes, name, mime) = match picker::read_uri_bytes(&uri) {
             Ok(v) => v,
+            Err(e) if e.starts_with("FILE_TOO_LARGE:") => {
+                let sz = e.trim_start_matches("FILE_TOO_LARGE:").parse::<i64>().unwrap_or(0);
+                toast(&weak, &format!("File too large: {} (max 60 MB)", api::human_size(sz)));
+                return;
+            }
             Err(e) => {
                 toast(&weak, &format!("Could not read file: {}", e));
                 return;

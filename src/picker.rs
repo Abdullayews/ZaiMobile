@@ -340,11 +340,16 @@ pub fn read_uri_bytes(uri: &str) -> Result<(Vec<u8>, String, String), String> {
                     .and_then(|r| r.l())
                     .map_err(|e| e.to_string())?;
 
-                // display name
+                // display name + SIZE (bir sorğu ilə) — ölçü əvvəlcə yoxlanılır:
+                // 60MB-dən böyük faylın tamamı RAM-a oxunmadan rədd edilir
+                // (əvvəl əvvəlcə TAM oxunur, sonra yoxlanılırdı — 500MB videoda OOM)
                 let mut name = "file".to_string();
+                let mut size_hint: i64 = -1;
                 let proj = env
-                    .new_object_array(1, "java/lang/String", env.new_string("_display_name").map_err(|e| e.to_string())?)
+                    .new_object_array(2, "java/lang/String", env.new_string("_display_name").map_err(|e| e.to_string())?)
                     .map_err(|e| e.to_string())?;
+                let col_size = env.new_string("_size").map_err(|e| e.to_string())?;
+                env.set_object_array_element(&proj, 1, &col_size).map_err(|e| e.to_string())?;
                 if let Ok(cursor) = env
                     .call_method(
                         &cr,
@@ -378,8 +383,16 @@ pub fn read_uri_bytes(uri: &str) -> Result<(Vec<u8>, String, String), String> {
                                 name = display;
                             }
                         }
+                        size_hint = env
+                            .call_method(&cursor, "getLong", "(I)J", &[JValue::Int(1)])
+                            .and_then(|r| r.j())
+                            .unwrap_or(-1);
                     }
                     let _ = env.call_method(&cursor, "close", "()V", &[]);
+                }
+                const MAX_UPLOAD: i64 = 60 * 1024 * 1024;
+                if size_hint > MAX_UPLOAD {
+                    return Err(format!("FILE_TOO_LARGE:{}", size_hint));
                 }
 
                 // mime
