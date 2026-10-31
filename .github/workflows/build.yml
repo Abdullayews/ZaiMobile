@@ -1,4 +1,4 @@
-name: Build APK (Rust)
+name: Build APK (Kotlin)
 
 on:
   push:
@@ -20,110 +20,58 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Rust quraşdır
-        uses: dtolnay/rust-toolchain@stable
+      - name: JDK 21
+        uses: actions/setup-java@v4
         with:
-          targets: aarch64-linux-android
-          components: clippy
+          distribution: temurin
+          java-version: '21'
 
-      - name: Rust keş
-        uses: Swatinem/rust-cache@v2
-
-      # ---- Keyfiyyət qapıları (build-dən ƏVVƏL — xətalı kod APK-a çatmasın) ----
-      - name: Host asılılıqları (fontconfig — slint host preview üçün)
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq libfontconfig1-dev pkg-config > /dev/null
-
-      - name: Clippy (host, -D warnings)
-        run: cargo clippy --release --lib --bins -- -D warnings
-
-      - name: Testlər (host)
-        run: cargo test --release --lib
-
-      # ubuntu-latest-da Android SDK hazır olur (ANDROID_HOME) — yalnız NDK lazımdır
-      - name: NDK quraşdır
+      - name: Android SDK (platform-34 + build-tools 34)
         run: |
           SDKM=$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager
-          $SDKM --version
           yes | $SDKM --licenses > /dev/null || true
-          $SDKM --install "ndk;27.2.12479018" > /dev/null
-          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> $GITHUB_ENV
-          echo "TOOLCHAIN=$ANDROID_HOME/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_ENV
+          $SDKM --install "platforms;android-34" "build-tools;34.0.0" > /dev/null
+          echo "ANDROID_HOME=$ANDROID_HOME"
 
-          # build-tools və platform dinamik tap
-          BT=$(ls $ANDROID_HOME/build-tools/ | sort -V | tail -1)
-          PLAT=$(ls $ANDROID_HOME/platforms/ | sort -V | tail -1)
-          echo "BT_VER=$BT" >> $GITHUB_ENV
-          echo "PLAT_VER=$PLAT" >> $GITHUB_ENV
-          echo "BUILD_TOOLS=$ANDROID_HOME/build-tools/$BT" >> $GITHUB_ENV
-          echo "PLATFORM_JAR=$ANDROID_HOME/platforms/$PLAT/android.jar" >> $GITHUB_ENV
-          echo "build-tools: $BT | platforms: $PLAT"
-          ls $ANDROID_HOME/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang
+      - name: Gradle 8.10.2
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
 
-      - name: Clippy (android target — JNI kodu)
+      - name: Versiya
         run: |
-          export AR=$TOOLCHAIN/llvm-ar
-          export CC_aarch64_linux_android=$TOOLCHAIN/aarch64-linux-android24-clang
-          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$TOOLCHAIN/aarch64-linux-android24-clang
-          export RUSTFLAGS="-C link-arg=-landroid"
-          cargo clippy --release --target aarch64-linux-android --lib -- -D warnings
+          VC=$((7000 + ${{ github.run_number }}))
+          VN=7.0.0-beta.${{ github.run_number }}
+          APK=ZaiMobile-v$VN.apk
+          echo "VC=$VC" >> $GITHUB_ENV
+          echo "APK_NAME=$APK" >> $GITHUB_ENV
+          echo "VERSION_NAME=$VN" >> $GITHUB_ENV
+          echo "versionCode=$VC versionName=$VN → $APK"
 
-      - name: Build (aarch64-linux-android)
-        run: |
-          export AR=$TOOLCHAIN/llvm-ar
-          export CC_aarch64_linux_android=$TOOLCHAIN/aarch64-linux-android24-clang
-          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$TOOLCHAIN/aarch64-linux-android24-clang
-          export RUSTFLAGS="-C link-arg=-landroid"
-          cargo build --release --target aarch64-linux-android --lib
-          ls -la target/aarch64-linux-android/release/libzai_mobile.so
+      - name: Build (release)
+        run: gradle assembleRelease --no-daemon -PzaiVersionCode=$VC -PzaiVersionName=$VN
 
       - name: Ölçü hesabatı
         run: |
-          SO=target/aarch64-linux-android/release/libzai_mobile.so
+          APK_RAW=app/build/outputs/apk/release/app-release-unsigned.apk
           echo "=== HESABAT ==="
-          echo ".so: $(stat -c%s $SO) bayt ($(du -h $SO | cut -f1))"
-          echo "Assets (gömülü): $(du -sh assets | cut -f1) — fonts $(du -sh assets/fonts | cut -f1), kartlar $(du -sh assets/cards | cut -f1)"
-          echo "Bağlı asılılıq sayı: $(cargo tree --target aarch64-linux-android --prefix none 2>/dev/null | grep -Eo '^[a-z0-9_-]+ v' | sort -u | wc -l)"
+          echo "unsigned APK: $(stat -c%s $APK_RAW) bayt ($(du -h $APK_RAW | cut -f1))"
+          echo "Yeganə xarici asılılıq: kotlinx-coroutines-android 1.8.1"
 
-      - name: APK yığ
+      - name: Hizala + imzala
         run: |
           set -e
-          BT=$BUILD_TOOLS
-          JAR=$PLATFORM_JAR
-          SO=target/aarch64-linux-android/release/libzai_mobile.so
-          VC=${{ github.run_number }}
-          VN=6.0.0-beta.$VC
-          APK=ZaiMobile-v$VN.apk
-          echo "APK_NAME=$APK" >> $GITHUB_ENV
-          echo "VERSION_NAME=$VN" >> $GITHUB_ENV
-
-          rm -rf build && mkdir -p build/lib/arm64-v8a
-          cp $SO build/lib/arm64-v8a/
-
-          # res kompilyasiya + link (manifest + ikonlar)
-          $BT/aapt2 compile --dir res -o build/res.zip
-          $BT/aapt2 link -o build/app-unsigned.apk \
-            --manifest AndroidManifest.xml \
-            -I $JAR \
-            --min-sdk-version 24 --target-sdk-version 34 \
-            --version-code $VC --version-name $VN \
-            build/res.zip
-
-          # .so faylını düzgün qovluq yolu ilə əlavə et
-          cd build
-          zip -q app-unsigned.apk lib/arm64-v8a/libzai_mobile.so
-          cd ..
-
-          # hizala + imzala
-          $BT/zipalign -f -p 4 build/app-unsigned.apk build/app-aligned.apk
-          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > build/zai-release.keystore
+          BT=$ANDROID_HOME/build-tools/34.0.0
+          $BT/zipalign -f -p 4 app/build/outputs/apk/release/app-release-unsigned.apk app-aligned.apk
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > zai-release.keystore
           $BT/apksigner sign \
-            --ks build/zai-release.keystore \
+            --ks zai-release.keystore \
             --ks-key-alias zai \
             --ks-pass pass:${{ secrets.KEYSTORE_PASSWORD }} \
             --key-pass pass:${{ secrets.KEY_PASSWORD }} \
-            --out $APK build/app-aligned.apk
-          $BT/apksigner verify --print-certs $APK | head -4
-          ls -la $APK
+            --out $APK_NAME app-aligned.apk
+          $BT/apksigner verify --print-certs $APK_NAME | head -4
+          ls -la $APK_NAME
 
       - name: Artifakt
         uses: actions/upload-artifact@v4
@@ -134,29 +82,35 @@ jobs:
       - name: Beta Release (pre-release)
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v6.0.0-beta.${{ github.run_number }}
-          name: Z.ai Native v6.0.0-beta.${{ github.run_number }} (Beta)
+          tag_name: v7.0.0-beta.${{ github.run_number }}
+          name: Z.ai Native v7.0.0-beta.${{ github.run_number }} (Beta)
           body: |
             ⚡ **Beta buraxılış** — hər push-da GitHub Actions-da avtomatik qurulur və imzalanır.
 
-            **v6.0 — WEBVIEW YOXDUR: 100% native + adi hesab girişi (email + şifrə).**
+            **v7.0 — TAM KOTLIN YENİDƏN YAZILIŞI: 100% native (WebView YOX), adi hesab girişi (email + şifrə).**
 
+            • **Kotlin + korutinlər**: Rust/Slint kod bazası tamamilə tərk edildi; bütün UI native
+              Android View-lar, bütün şəbəkə HttpURLConnection + korutinlər (Dispatchers.IO), axın
+              Channel ilə UI-yə (Dərs 15-16-nın tətbiqi)
+            • **WebView YOXDUR — webdən data almaq**: REST API (JSON), HTML scraping, SSE (server-sent
+              events) axını — hamısı native HTTP (Dərs 18-in tətbiqi)
+            • **FULLSCREEN düzəldi**: Activity həmişə tam pəncərəni tutur (köhnə Slint 915dp pinləmə
+              bug-u struktur olaraq mümkün deyil); immersive sticky + WindowInsetsController (API 30+)
+              + systemUiVisibility fallback + IME insets (Dərs 20-nin tətbiqi)
             • **Adi hesab girişi**: Google / Email / Github düymələri (saytın kimi) → email + şifrə
-              ilə birbaşa native giriş (POST /api/v1/auths/signin)
-            • **Captcha fallback axını**: Z.ai captcha tələb etdikdə — sistem brauzerində bir dəfə
-              giriş + clipboard-dan token aşkarlanması GÖSTƏRİLİR, yalnız siz "Sign in with detected
-              token" düyməsinə toxunanda daxil olursunuz (razılıqsız heç nə oxunmur)
-            • **Dark tema (standart)** + light — saytın dəqiq CSS palette-i (index CSS-dən götürülüb)
-            • **Fayl əlavələri**: MediaStore native fayl seçici → serverə upload
-              (multipart /api/v1/storage/pfs/files/upload) → image_url/video_url/file_url content massivi
-              (şəkil, video, sənəd — saytın dəqiq protokolu)
-            • **Avtomatik yenidən göndərmə**: "server busy" / şəbəkə xətalarında mesaj ƏLAVƏLƏR
-              SAXLANILARAQ avtomatik təkrarlanır (4 cəhd, eksponensial gecikmə)
-            • Tam veb protokolu: guest token, imza HMAC-SHA256, v2 completions SSE, WAF retry,
-              watchdog (150s), 401-də avtomatik bərpa, tarixçə sinxronizasiyası
-            • Rəsmi Z.ai loqosu (adaptive + monochrome ikonlar), welcome "More than coding...",
-              5 təklif kartı, model popup (Effort), markdown + kod copy, clipboard copy
-            • Sürətli açılış: paralel boot, model siyahısı arxa planda
+              ilə birbaşa native giriş (POST /api/v1/auths/signin), "Skip for now" = qonaq tokeni
+            • **Captcha fallback**: sistem brauzerində bir dəfə giriş + tokeni köçürüb "Sign in with
+              token" (clipboard-da eyJ… aşkarlananda təklif olunur)
+            • **Tam veb protokolu**: HMAC-SHA256 imza, /api/v2/chat/completions SSE, WAF retry,
+              çoxsətirli SSE birləşdirmə, avtomatik bərpa (4 cəhd), 401-də çıxış, tarixçə sinxronu
+            • **Chat**: streaming mətn, fazalar (Thinking… / Searching…), markdown (başlıq, qalın,
+              meyl, kod blokları + copy, siyahılar, sitatlar, keçidlər), tap-to-retry
+            • **Söhbətlər**: sidebar (söhbət siyahısı, aç/sil, başlıq sinxronu), model + thinking
+              effort seçimi
+            • **Fayl əlavələri**: SAF seçici (60MB limit) → multipart upload → image_url/video_url/file_url
+              content massivi; böyük şəkillər avtomatik 2048px JPEG-ə endirilir
+            • APK yalnız ~1.7MB (Rust versiyası 9.9MB idi) — yeganə asılılıq coroutines
+            • Kotlin dərs kursu (20 dərs, hamısı testlə doğrulanıb): `kotlin-dersleri/`
           files: ${{ env.APK_NAME }}
           prerelease: true
           make_latest: false
