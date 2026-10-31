@@ -49,7 +49,7 @@ jobs:
           echo "versionCode=$VC versionName=$VN → $APK"
 
       - name: Build (release)
-        run: gradle assembleRelease --no-daemon -PzaiVersionCode=$VC -PzaiVersionName=$VN
+        run: gradle assembleRelease --no-daemon -PzaiVersionCode=$VC -PzaiVersionName=$VERSION_NAME
 
       - name: Ölçü hesabatı
         run: |
