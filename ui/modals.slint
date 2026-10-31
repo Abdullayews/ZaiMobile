@@ -58,7 +58,9 @@ export component ModelPopup inherits Rectangle {
 
     Rectangle {
         x: (parent.width - Math.min(parent.width - 24px, 400px)) / 2;
-        y: parent.height - self.height - 110px;
+        // aşağıdan 110px yuxarıda, amma üstü ekrandan çıxmasın (uzun model
+        // siyahısında y mənfi ola bilərdi → popup-un başlığı görünmürdü)
+        y: Math.max(60px, parent.height - self.height - 110px);
         width: Math.min(parent.width - 24px, 400px);
         height: mp-col.preferred-height + 16px;
 

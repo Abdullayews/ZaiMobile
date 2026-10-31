@@ -1328,7 +1328,7 @@ pub fn run() {
             if t.is_empty() && files.is_empty() {
                 return;
             }
-            let app = weak_c.upgrade().unwrap();
+            let Some(app) = weak_c.upgrade() else { return };
             let g = app.global::<App>();
             g.set_input_text("".into());
             g.set_auto_scroll(true);
@@ -1394,7 +1394,7 @@ pub fn run() {
             *l(&core_c.chat_id) = String::new();
             *l(&core_c.chat_title) = "New Chat".into();
             *l(&core_c.messages) = Vec::new();
-            let app = weak_c.upgrade().unwrap();
+            let Some(app) = weak_c.upgrade() else { return };
             let g = app.global::<App>();
             g.set_chat_title("New Chat".into());
             g.set_sidebar_open(false);
@@ -1436,7 +1436,7 @@ pub fn run() {
         let core_c = core.clone();
         let weak_c = weak.clone();
         g.on_do_sign_in(move |email, password| {
-            let app = weak_c.upgrade().unwrap();
+            let Some(app) = weak_c.upgrade() else { return };
             let g = app.global::<App>();
             g.set_login_busy(true);
             g.set_login_error("".into());
@@ -1582,7 +1582,7 @@ pub fn run() {
         let core_c = core.clone();
         let weak_c = weak.clone();
         g.on_continue_as_guest(move || {
-            let app = weak_c.upgrade().unwrap();
+            let Some(app) = weak_c.upgrade() else { return };
             let g = app.global::<App>();
             g.set_login_busy(true);
             let core_cc = core_c.clone();
@@ -1718,7 +1718,7 @@ pub fn run() {
                     store::save(&p);
                 }
                 let labels = effort_labels_of(m);
-                let app = weak_c.upgrade().unwrap();
+                let Some(app) = weak_c.upgrade() else { return };
                 let g = app.global::<App>();
                 g.set_model_index(idx);
                 g.set_effort(2.min(labels.len().saturating_sub(1) as i32));
@@ -1734,7 +1734,7 @@ pub fn run() {
             let mut p = l(&core_c.persisted);
             p.effort_index = e.max(0) as usize;
             store::save(&p);
-            let app = weak_e.upgrade().unwrap();
+            let Some(app) = weak_e.upgrade() else { return };
             app.global::<App>().set_effort(e);
         });
 

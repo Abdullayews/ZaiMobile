@@ -57,7 +57,11 @@ export struct PickedFile {
 
 export global App {
     // ---- ekran vəziyyəti ----
-    in-out property <bool> booting;            // açılış spinner-i
+    // true başlayır: açılış splash-i dərhal göstərilir və sessiya tətbiq
+    // olunana qədər login ekranının «flaş» etməsinin qarşısını alır
+    // (əvvəl default false idi → qayıdan istifadəçi login ekranını görüb
+    // sonra chat-ə düşürdü)
+    in-out property <bool> booting: true;
     in-out property <bool> sidebar-open;
     in-out property <bool> streaming;
     in-out property <string> phase;            // "Thinking…" / "" (axın fazası)

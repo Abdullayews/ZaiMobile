@@ -302,3 +302,19 @@ real cihazda (fərqli IP) yoxlanmalıdır.
 
 5. chat_update (stream.rs): reasoning_effort həmişə "high" hardkod
    edilirdi — seçilmiş effort indi saxlanılır.
+
+## Loop sessiyası — İterasiya 5: açılış flaşı + shutdown-panik + popup clamp
+
+1. AÇILIŞ FLAŞI (state.slint): `booting` heç vaxt true edilmirdi (yalnız
+   set_booting(false) var idi) → splash dead-code idi və saxlanmış sessiyası
+   olan istifadəçi hər açılışda qısa LOGİN EKRANI FLAŞI görürdü, sonra
+   chat-ə düşürdü. İndi booting=true başlayır → splash dərhal göstərilir,
+   sessiya tətbiq olunana qədər heç bir ekran flaş etmir.
+
+2. SHUTDOWN PANİKİ (controller.rs): 6 UI callback-də `weak.upgrade().unwrap()`
+   var idi — app bağlanarkən gecikən callback None qaytarır → unwrap →
+   panic → panic="abort" bütün PROSESSİ öldürürdü (təmiz çıxış əvəzinə
+   crash). Hamısı zərif `else { return }` ilə əvəz olundu.
+
+3. ModelPopup clamp (modals.slint): uzun model siyahısında popup-un y-i
+   mənfi ola bilirdi (başlıq ekrandan yuxarıda qalırdı). Math.max(60px, …).
