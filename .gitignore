@@ -1,5 +1,16 @@
-/target
-/build
-*.apk.tmp
-Cargo.lock.bak
-data/
+# Gradle
+.gradle/
+build/
+app/build/
+
+# Lokal konfiqurasiya
+local.properties
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Sistem
+.DS_Store
+*.log
