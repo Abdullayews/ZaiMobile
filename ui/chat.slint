@@ -304,6 +304,11 @@ component MessageRow inherits VerticalLayout {
 
 component SuggestionCard inherits Rectangle {
     in property <image> img;
+    // Şəklin təbii aspekt nisbətinə uyğun hündürlük (en 96px sabit).
+    // QEYD: Image-də yalnız width qoymaq olmaz — explicit width həm də elementin
+    // max-width-i kimi yayılır və GridLayout sütununu kartın min-eninə sıxır
+    // (sınaqla təsdiqlənib: kartlar 119px yerinə 177px olmalı idi).
+    in property <length> img-h: 55px;
     in property <string> label;
     callback picked(string);
 
@@ -322,9 +327,15 @@ component SuggestionCard inherits Rectangle {
         alignment: center;
         padding: 12px;
         spacing: 10px;
-        Image {
-            source: root.img;
-            width: 96px;
+        // Şəkli mərkəzlə: HLayout alignment:center həm mərkəzləyir, həm də
+        // kartın max-width-ini şəklin eni ilə məhdudlaşdırmır (sütun genişlənir)
+        HorizontalLayout {
+            alignment: center;
+            Image {
+                source: root.img;
+                width: 96px;
+                height: root.img-h;
+            }
         }
         Text {
             text: root.label;
@@ -357,18 +368,19 @@ component WelcomeContent inherits Rectangle {
         }
 
         // 2 sütunlu şəbəkə (veb kimi: 2+2+1)
+        // img-h: hər PNG-nin təbii aspektinə görə (en/çəkil nisbəti, en=96px)
         GridLayout {
             spacing: 10px;
             Row {
-                SuggestionCard { img: @image-url("../assets/cards/fullstack.png"); label: "Full-Stack"; picked(t) => { root.pick-suggestion(t); } }
-                SuggestionCard { img: @image-url("../assets/cards/writing.png"); label: "Writing"; picked(t) => { root.pick-suggestion(t); } }
+                SuggestionCard { img: @image-url("../assets/cards/fullstack.png"); img-h: 55px; label: "Full-Stack"; picked(t) => { root.pick-suggestion(t); } }
+                SuggestionCard { img: @image-url("../assets/cards/writing.png"); img-h: 54px; label: "Writing"; picked(t) => { root.pick-suggestion(t); } }
             }
             Row {
-                SuggestionCard { img: @image-url("../assets/cards/data.png"); label: "Data Insight"; picked(t) => { root.pick-suggestion(t); } }
-                SuggestionCard { img: @image-url("../assets/cards/slides.png"); label: "PPT"; picked(t) => { root.pick-suggestion(t); } }
+                SuggestionCard { img: @image-url("../assets/cards/data.png"); img-h: 66px; label: "Data Insight"; picked(t) => { root.pick-suggestion(t); } }
+                SuggestionCard { img: @image-url("../assets/cards/slides.png"); img-h: 55px; label: "PPT"; picked(t) => { root.pick-suggestion(t); } }
             }
             Row {
-                SuggestionCard { img: @image-url("../assets/cards/web.png"); label: "Web Site"; picked(t) => { root.pick-suggestion(t); } }
+                SuggestionCard { img: @image-url("../assets/cards/web.png"); img-h: 55px; label: "Web Site"; picked(t) => { root.pick-suggestion(t); } }
                 Rectangle { }
             }
         }
@@ -415,19 +427,38 @@ component Composer inherits Rectangle {
             }
         }
 
-        // mətn sahəsi + placeholder
+        // mətn sahəsi + placeholder. Uzun mətn Flickable ilə kursora sürüşdürülür
+        // (əvvəl: TextInput 160px-də kəsilirdi, kursor görünmürdü — Slint
+        // TextEditBase-in cursor-position-changed məntiqi tətbiq olunub)
         Rectangle {
             height: Math.min(input.preferred-height, Theme.composer-max-h);
             clip: true;
-            input := TextInput {
+            input-flick := Flickable {
                 x: 0; y: 0;
                 width: parent.width;
-                height: Math.min(self.preferred-height, Theme.composer-max-h);
-                text <=> App.input-text;
-                font-size: 15px;
-                font-family: Theme.font-body;
-                color: Theme.text;
-                wrap: word-wrap;
+                height: parent.height;
+                content-width: parent.width;
+                content-height: input.preferred-height;
+
+                input := TextInput {
+                    x: 0; y: 0;
+                    width: parent.width;
+                    height: self.preferred-height;
+                    text <=> App.input-text;
+                    font-size: 15px;
+                    font-family: Theme.font-body;
+                    color: Theme.text;
+                    wrap: word-wrap;
+
+                    cursor-position-changed(cpos) => {
+                        if (cpos.y + input-flick.content-y < 0px) {
+                            input-flick.content-y = max(input-flick.height - self.height, -cpos.y);
+                        } else if (cpos.y + input-flick.content-y > input-flick.height - 20px) {
+                            input-flick.content-y = min(0px, max(input-flick.height - self.height,
+                                                 input-flick.height - cpos.y - 20px));
+                        }
+                    }
+                }
             }
             if App.input-text == "" : Text {
                 x: 0; y: 0;

@@ -178,3 +178,44 @@ HƏLL:
 Nəticə (struktur): açılışda N mesajlıq parse → yalnız görünən ~10 sətir;
 RAM artımı görünən sətirlərlə məhdudlaşır. Kəmiyyət ölçümü cihazda
 (adb dumpsys meminfo + gfxinfo) aparılmalıdır.
+
+## Loop sessiyası — İterasiya 1: UI yerləşdirmə (welcome grid + composer)
+
+PROBLEM 1 (welcome grid sıxılması — istifadəçi: «yerləşdirmələr doğru deyil»):
+SuggestionCard içindəki `Image { width: 96px; }` yalnız en qoyurdu. Slint-də
+explicit width həm də elementin MAX-width-i kimi layout-a yayılır → kartın
+max eni 96+24=120px-ə çatırdı → GridLayout sütunu genişlənə bilmir, bütün
+grid SOLDA 119px kartlarla sıxılırdı (sağda 138px boşluq), şəkillər solda
+hizalanırdı, PPT kartının tünd qradient kartı qonşu kartın üstünə «X»-ə
+bənzər ləkə kimi görünürdü.
+
+SÜBUT (izolyasiya testləri, /home/z/my-project/scripts/imgtest):
+- T5a (kartda preferred≈10px məzmun): grid DOLUR (175px kartlar)
+- T5b/T5c/T5d (fixed-width uşaqlar): kartlar PREFERRED ölçüdə sıxılır
+- F2/F4/F5/F6 (max-width / HLayout-center / %-width): DOLUR
+→ səbəb-nəticə əlaqəsi sübuta bağlandı
+
+HƏLL (ui/chat.slint):
+- SuggestionCard: `in property <length> img-h` + `HorizontalLayout {
+  alignment: center; Image { width: 96px; height: img-h } }` — həm mərkəzləmə,
+  həm sütunun genişlənməsi (HLayout alignment:center kartın max-width-ini
+  uşağın fixed eninə bağlamır)
+- img-h hər PNG-nin təbii aspektinə görə: fullstack 55, writing 54,
+  data 66, slides 55, web 55 (en/çəkil nisbəti, en=96px) — image-fit:contain
+  YOX (femtovg-də sınaqlarla təsdiqlənmiş yerləşdirmə qərizası)
+
+PROBLEM 2 (composer): TextInput `Math.min(preferred, 160px)` hündürlüklə
+kəsilirdi — uzun mətn yazanda kursor görünməz olurdu, scroll yox idi.
+
+HƏLL: Flickable + TextInput tam preferred hündürlükdə + rəsmi Slint
+TextEditBase-in `cursor-position-changed` sürüşdurmə məntiqi (chat.slint).
+
+QEYD (ölçmə aləti): scripts/shot.sh artıq `-draw_mouse 0` istifadə edir —
+ffmpeg x11grab default olaraq X11 kursorunu (mərkəzdə «X» şəkilli default
+kursor) görüntüyə çəkir və bu, yanlış «X artefaktı» diaqnozuna gətirib
+çıxarırdı (izolyasiya testlərində sübut olundu: «X» həmişə pəncərə
+mərkəzində idi, -draw_mouse 0 ilə yox oldu).
+
+Yoxlama: cargo check/clippy -D warnings/testlər keçdi; desktop preview
+(Xvfb) — kartlar 25..199 və 212..386 (175px, tam en), şəkillər mərkəzdə,
+VLM audit: artefakt yoxdur.
