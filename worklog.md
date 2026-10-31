@@ -355,3 +355,23 @@ real cihazda (fərqli IP) yoxlanmalıdır.
    söhbətdirsə, söhbət tam sıfırlanır (reset_conversation).
 
 2. assets/cards/logo.svg (11KB) — heç yerdə istifadə olunmur, silindi.
+
+## Loop sessiyası — İterasiya 9: binary ölçüsü −1.29MB (font subset + kart 2x)
+
+ÖLÇMƏ (host bin, eyni profil): 19,641,336 → 18,289,656 bayt (−1,351,680;
+−6.9%).
+
+1. FONT SUBSET (assets/fonts): 4 TTF tam gömülürdü (1,714 KB). pyftsubset
+   ilə işlədiyi diapazonlar saxlandı (Basic Latin, Latin-1, Latin Ext A/B —
+   Əə Ğğ Iı İi, IPA, combining, Yunan, Kirill, durğu, valyuta, riyazi,
+   box-drawing, misc symbols), hinting atıldı (mobil yüksək DPI), ad cədvəli
+   minimala endirildi → 696 KB (−59%). VLM render doğrulaması: AZ/TR/Kiril/
+   Yunan/simvollar hamısı düzgün; ₼ (U+20BC) orijinal Carlito-da ZATƏN
+   yox idi (regresiya yoxdur).
+
+2. KART ŞƏKİLLƏRİ (assets/cards): 688-832px PNG-lər 96px göstərilirdi →
+   192px (2x) LANCZOS endirildi: 438 KB → 134 KB (−69%). VLM: kəskinlik
+   və layout qorunur.
+
+3. İstifadəsiz 13 ikon PNG-si silindi (yalnız google/github istifadə
+   olunur — Path ikonlara keçid hələ v4-də olub).
