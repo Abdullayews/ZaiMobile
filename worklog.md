@@ -318,3 +318,18 @@ real cihazda (fərqli IP) yoxlanmalıdır.
 
 3. ModelPopup clamp (modals.slint): uzun model siyahısında popup-un y-i
    mənfi ola bilirdi (başlıq ekrandan yuxarıda qalırdı). Math.max(60px, …).
+
+## Loop sessiyası — İterasiya 6: SSE multi-line + sign-in təmizliyi
+
+1. SSE MULTI-LINE (stream.rs): SSE spesifikasiyası bir hadisəni bir neçə
+   `data:` sətirinə bölə bilər — əvvəl hər sətir ayrıca JSON parse
+   olunurdu, bölünmüş hadisələr SİLİNİRDİ (məzmun itkisi). İndi: sətir
+   tək başına JSON deyilsə, növbəti sətirlə birləşdirilib təkrar sınaq
+   olunur (tək-sətirli normal axın dəyişməz — sürətli yol qorunur).
+
+2. SİGN-IN TƏMİZLİYİ (controller.rs): qonaq kimi söhbət edib sonra hesaba
+   daxil olanda köhnə QONAQ mesajları ekranda qalırdı VƏ yeni hesabın yeni
+   chat-inə kontekst kimi göndərilirdi (yalnız chat_id sıfırlanırdı).
+   İndi uğurlu girişin üç yolunda da (email, token, clipboard-token)
+   reset_conversation: mesajlar, başlıq, input, UI modeli tam təmizlənir,
+   aktiv axın dayandırılır. Sign-out yolu da eyni helper-dən istifadə edir.

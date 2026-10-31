@@ -402,6 +402,29 @@ fn apply_auth(core: &Core, weak: &Weak<AppWindow>, auth: &AuthInfo) {
     });
 }
 
+/// Uğurlu girişdən sonra qonaq sessiyasının izlərini təmizlə: köhnə qonaq
+/// mesajları yeni hesabın yeni söhbətində QALMAMALI və kontekst kimi yeni
+/// chat-ə GETMƏMƏLİDİR (əvvəl yalnız chat_id sıfırlanırdı — mesajlar
+/// ekranda qalırdı və tarixçəyə düşürdü).
+fn reset_conversation(core: &Core, weak: &Weak<AppWindow>) {
+    stop_current_job(core);
+    *l(&core.chat_id) = String::new();
+    *l(&core.chat_title) = "New Chat".into();
+    *l(&core.messages) = Vec::new();
+    let _ = slint::invoke_from_event_loop({
+        let weak = weak.clone();
+        move || {
+            if let Some(app) = weak.upgrade() {
+                let g = app.global::<App>();
+                g.set_chat_title("New Chat".into());
+                g.set_messages(Rc::new(slint::VecModel::<ChatMessage>::default()).into());
+                g.set_input_text("".into());
+                g.set_auto_scroll(true);
+            }
+        }
+    });
+}
+
 fn spawn_load_models(core: Arc<Core>, weak: Weak<AppWindow>) {
     std::thread::spawn(move || {
         let (token, guest) = {
@@ -1449,7 +1472,7 @@ pub fn run() {
                     Ok(a) => {
                         apply_auth(&core_cc, &weak_cc, &a);
                         toast(&weak_cc, &format!("Welcome, {}", a.user_name));
-                        *l(&core_cc.chat_id) = String::new();
+                        reset_conversation(&core_cc, &weak_cc);
                         spawn_load_models(core_cc.clone(), weak_cc.clone());
                         spawn_load_conversations(core_cc, weak_cc);
                     }
@@ -1500,7 +1523,7 @@ pub fn run() {
                 Ok(a) => {
                     apply_auth(&core_cc, &weak_cc, &a);
                     toast(&weak_cc, &format!("Welcome, {}", a.user_name));
-                    *l(&core_cc.chat_id) = String::new();
+                    reset_conversation(&core_cc, &weak_cc);
                     spawn_load_models(core_cc.clone(), weak_cc.clone());
                     spawn_load_conversations(core_cc, weak_cc);
                 }
@@ -1546,7 +1569,7 @@ pub fn run() {
                         Ok(a) => {
                             apply_auth(&core_cc, &weak_cc, &a);
                             toast(&weak_cc, &format!("Welcome, {}", a.user_name));
-                            *l(&core_cc.chat_id) = String::new();
+                            reset_conversation(&core_cc, &weak_cc);
                             spawn_load_models(core_cc.clone(), weak_cc.clone());
                             spawn_load_conversations(core_cc, weak_cc);
                         }
@@ -1634,9 +1657,8 @@ pub fn run() {
                 if let Ok(a) = core_cc.client.guest_auth() {
                     apply_auth(&core_cc, &weak_cc, &a);
                 }
-                *l(&core_cc.chat_id) = String::new();
-                *l(&core_cc.chat_title) = "New Chat".into();
-                *l(&core_cc.messages) = Vec::new();
+                // söhbəti tam sıfırla (mesajlar, başlıq, UI modeli)
+                reset_conversation(&core_cc, &weak_cc);
                 let _ = slint::invoke_from_event_loop({
                     let weak = weak_cc.clone();
                     move || {

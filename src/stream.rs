@@ -303,6 +303,12 @@ fn run_once(
     let mut got_done = false;
     let mut had_error: Option<String> = None;
     let mut stopped = false;
+    // Multi-line SSE dəstəyi: sətir tək başına tam JSON deyilsə, növbəti
+    // sətirlə birləşdirilir (SSE spesifikasiyası bir hadisəni bir neçə
+    // data: sətirinə bölə bilər — əvvəl belə hadisələr SİLİNİRDİ).
+    // Tək-sətirli hadisələr (server-in normal halı) dəyişməz işləyir:
+    // parse uğurlu olanda buffer iştirak etmir.
+    let mut pending = String::new();
 
     for line in reader.lines() {
         if job.is_stopped() {
@@ -327,25 +333,44 @@ fn run_once(
             got_done = true;
             break;
         }
-        let ev: Value = match serde_json::from_str(payload) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        match parse_stream_event(&ev) {
-            Some(StreamEvent::Delta(d)) => {
-                full.push_str(&d);
-                emit(StreamEvent::Delta(d));
+        // 1) sürətli yol: sətir tək başına tam JSON-dursa birbaşa işlə;
+        // 2) deyilsə — əvvəlki qalıqla birləşdirib təkrar sına
+        let ev: Option<Value> = serde_json::from_str(payload).ok().or_else(|| {
+            if pending.is_empty() {
+                return None;
             }
-            Some(StreamEvent::Phase(p)) => emit(StreamEvent::Phase(p)),
-            Some(StreamEvent::Reset) => {}
-            Some(StreamEvent::Done) => got_done = true,
-            Some(StreamEvent::Error(e)) => {
-                had_error = Some(e);
-                break;
+            let joined = format!("{}\n{}", pending, payload);
+            serde_json::from_str(&joined).ok()
+        });
+        match ev {
+            Some(ev) => {
+                pending.clear();
+                match parse_stream_event(&ev) {
+                    Some(StreamEvent::Delta(d)) => {
+                        full.push_str(&d);
+                        emit(StreamEvent::Delta(d));
+                    }
+                    Some(StreamEvent::Phase(p)) => emit(StreamEvent::Phase(p)),
+                    Some(StreamEvent::Reset) => {}
+                    Some(StreamEvent::Done) => got_done = true,
+                    Some(StreamEvent::Error(e)) => {
+                        had_error = Some(e);
+                    }
+                    Some(StreamEvent::CaptchaRequired) => return Err("CAPTCHA".into()),
+                    Some(StreamEvent::Unauthorized) => return Err("UNAUTHORIZED".into()),
+                    _ => {}
+                }
             }
-            Some(StreamEvent::CaptchaRequired) => return Err("CAPTCHA".into()),
-            Some(StreamEvent::Unauthorized) => return Err("UNAUTHORIZED".into()),
-            _ => {}
+            None => {
+                // tamamlanmamış JSON hissəsi — növbəti sətirlə birləşəcək.
+                // İki ardıcıl qalıq tam JSON vermədisə, köhnəsini at
+                // (sonsuz böyümənin qarşısı).
+                pending.clear();
+                pending.push_str(payload);
+            }
+        }
+        if had_error.is_some() {
+            break;
         }
         if got_done {
             break;
