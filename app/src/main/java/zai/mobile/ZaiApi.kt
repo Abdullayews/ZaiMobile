@@ -34,7 +34,7 @@ class CancelHandle {
  */
 class ZaiApi(private val deviceId: String) {
 
-    fun base(): String = "https://chat.z.ai"
+    fun base(): String = baseOverride ?: "https://chat.z.ai"
 
     // ---------------- Köməkçilər ----------------
 
@@ -82,6 +82,7 @@ class ZaiApi(private val deviceId: String) {
     ): Pair<Int, String> {
         var delay = 2.5
         var lastErr = "WAF block"
+        var ioErrors = 0
         repeat(attempts) {
             val conn = open(method, url, readTimeoutMs)
             cancel?.bind(conn)
@@ -96,6 +97,15 @@ class ZaiApi(private val deviceId: String) {
                 } else {
                     return code to body
                 }
+            } catch (e: java.io.IOException) {
+                // şəbəkə kəsintisi — qısa retry, sonra dostcasına xəta
+                ioErrors++
+                if (ioErrors >= 3) {
+                    throw ApiException.other("Connection error — check your internet and try again.")
+                }
+                lastErr = "Connection error (${e.message ?: "network"})"
+                Thread.sleep(Signature.jitterMs((delay * 1000).toLong()))
+                delay = (delay * 1.35).coerceAtMost(9.0)
             } finally {
                 conn.disconnect()
             }
@@ -450,6 +460,9 @@ class ZaiApi(private val deviceId: String) {
     }
 
     companion object {
+        /** Test hook (Rust ZAI_BASE ekvivalenti) — normalda null. */
+        var baseOverride: String? = null
+
         /** MIME/ad → media növü (veb tətbiqinin təsnifatı). */
         fun mediaKind(mime: String, name: String): String {
             val m = mime.lowercase()
