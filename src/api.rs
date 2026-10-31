@@ -438,21 +438,40 @@ impl Client {
         Ok(out)
     }
 
-    /// Söhbət siyahısı: GET /api/v1/chats/?page=1&type=default
+    /// Söhbət siyahısı: GET /api/v1/chats/?page=N&type=default — bütün
+    /// səhifələr (əvvəl yalnız 1-ci səhifə çəkilirdi, tarixçə kəsilirdi).
+    /// Qoruyucular: API səhifələməni görmədiyində eyni cavab təkrar gələrsə
+    /// (ilk id üst-üstə düşərsə) dayan; maksimum 10 səhifə / 300 söhbət.
     pub fn conversations(&self, token: &str) -> Result<Vec<ConvSummary>, String> {
-        let resp = self.send_with_retry(
-            || {
-                self.req(
-                    reqwest::Method::GET,
-                    &format!("{}/api/v1/chats/?page=1&type=default", base()),
-                )
-                .header("Authorization", format!("Bearer {}", token))
-            },
-            6,
-        )?;
-        let body: Value = resp.json().map_err(|e| e.to_string())?;
-        let mut out = Vec::new();
-        if let Some(arr) = body.as_array() {
+        let mut out: Vec<ConvSummary> = Vec::new();
+        let mut prev_first_id: Option<String> = None;
+        let mut first_page_len: Option<usize> = None;
+        let mut page = 1u32;
+        loop {
+            let resp = self.send_with_retry(
+                || {
+                    self.req(
+                        reqwest::Method::GET,
+                        &format!("{}/api/v1/chats/?page={}&type=default", base(), page),
+                    )
+                    .header("Authorization", format!("Bearer {}", token))
+                },
+                6,
+            )?;
+            let body: Value = match resp.json() {
+                Ok(v) => v,
+                Err(_) => break,
+            };
+            let arr = body.as_array().cloned().unwrap_or_default();
+            if arr.is_empty() {
+                break;
+            }
+            // API səhifəni iqnor edibsə eyni siyahı qayıdır → təkrarı dayandır
+            let cur_first_id = arr[0]["id"].as_str().map(|s| s.to_string());
+            if page > 1 && cur_first_id.is_some() && cur_first_id == prev_first_id {
+                break;
+            }
+            prev_first_id = cur_first_id;
             for c in arr {
                 let id = c["id"].as_str().unwrap_or("").to_string();
                 if id.is_empty() {
@@ -463,6 +482,20 @@ impl Client {
                     title: c["title"].as_str().unwrap_or("Chat").to_string(),
                     updated_at: c["updated_at"].as_i64().unwrap_or(0),
                 });
+            }
+            let n = out.len();
+            match first_page_len {
+                None => first_page_len = Some(n),
+                Some(fl) => {
+                    // sonrakı səhifə tam deyilsə — bu, sonuncudur
+                    if n - fl < fl {
+                        break;
+                    }
+                }
+            }
+            page += 1;
+            if page > 10 || out.len() > 300 {
+                break;
             }
         }
         Ok(out)

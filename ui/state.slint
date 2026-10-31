@@ -29,6 +29,7 @@ export struct ChatMessage {
     error: bool,
     retrying: bool,  // avtomatik yenidən göndərilir
     stamp: string,   // "14:32"
+    parsed: bool,    // markdown blokları hazırdır (lazy parse keşi üçün)
 }
 
 export struct ConvItem {

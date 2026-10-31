@@ -180,6 +180,9 @@ fn raw_to_ui(m: &RawMsg, eager: bool) -> ChatMessage {
         error: m.error,
         retrying: m.retrying,
         stamp: m.stamp.clone().into(),
+        // user/xəta sətirləri heç vaxt parse olunmur → hazır sayılır;
+        // assistant: eager → hazır, lazy → sətir görünəndə parse olunacaq
+        parsed: m.error || m.role == "user" || eager,
     }
 }
 
@@ -1760,22 +1763,15 @@ pub fn run() {
                     return;
                 }
                 let Some(row) = vm.row_data(i) else { return };
-                // yalnız: assistant + xətasız + bitmiş + mətnli
-                if row.role != "assistant" || row.error || row.streaming || row.text.is_empty() {
-                    return;
-                }
-                // artıq parse olunub? (sətir scroll-back-də yenidən yaradıla bilər)
-                let already = row
-                    .blocks
-                    .as_any()
-                    .downcast_ref::<slint::VecModel<MessageBlock>>()
-                    .map(|b| b.row_count() > 0)
-                    .unwrap_or(false);
-                if already {
+                // yalnız: assistant + xətasız + bitmiş + mətnli + HƏLƏ PARSE OLUNMAMIŞ
+                // (parsed flag-i: "***" kimi 0 bloka parse olunan mətnlərdə də
+                // təkrar-təkrar parse olunmanın qarşısını alır)
+                if row.role != "assistant" || row.error || row.streaming || row.text.is_empty() || row.parsed {
                     return;
                 }
                 let mut upd = row.clone();
                 upd.blocks = blocks_model(&row.text);
+                upd.parsed = true;
                 vm.set_row_data(i, upd);
             });
         }

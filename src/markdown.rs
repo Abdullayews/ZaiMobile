@@ -140,11 +140,20 @@ fn handle_line<'md>(
         }
         return;
     }
-    // siyahı
-    if (t.starts_with("- ") || t.starts_with("* ") || t.starts_with("+ "))
-        || (t.len() >= 2 && t.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) && t[1..].starts_with(". "))
-    {
-        let item = &t[2..];
+    // siyahı (nöqtəsiz: - * + / nömrəli: istənilən rəqəm sayı — "10. " də daxil)
+    let bullets = t.starts_with("- ") || t.starts_with("* ") || t.starts_with("+ ");
+    let ordered = {
+        let digits = t.chars().take_while(|c| c.is_ascii_digit()).count();
+        digits > 0 && t[digits..].starts_with(". ")
+    };
+    if bullets || ordered {
+        // gövdə: işarəni və boşluğu at (rəqəm sayından asılı olmayaraq düzgün)
+        let item = if bullets {
+            &t[2..]
+        } else {
+            let digits = t.chars().take_while(|c| c.is_ascii_digit()).count();
+            &t[digits + 2..]
+        };
         let text = strip_inline(item.trim());
         if !text.is_empty() {
             blocks.push(SpannedBlock {
@@ -409,6 +418,19 @@ mod tests {
                 cut
             );
         }
+    }
+
+
+    #[test]
+    fn ordered_list_ten_plus() {
+        // "10. " və "123. " — çoxrəqəmli nömrələr də siyahı kimi tanınmalı
+        let b = parse("1. first\n2. second\n10. tenth\n123. big");
+        assert_eq!(kinds(&b), vec![KIND_LIST, KIND_LIST, KIND_LIST, KIND_LIST]);
+        assert_eq!(b[2].text, "tenth");
+        assert_eq!(b[3].text, "big");
+        // "1.5" versiya nömrəsi kimi mətn — siyahı OLMAMALI (". " boşluq tələb edir)
+        let b2 = parse("version 1.5 is out");
+        assert_eq!(kinds(&b2), vec![KIND_TEXT]);
     }
 
     #[test]

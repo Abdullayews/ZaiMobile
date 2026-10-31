@@ -49,10 +49,13 @@ component ConvRow inherits Rectangle {
         }
 
         del := TouchArea {
-            width: 34px; height: 54px;
+            width: 34px;
+            // sətirin DAXİLİ hündürlüyü (54 − 6−6 padding) — 54px olsaydı
+            // qonşu sətirlərin üstünə daşıb yanlış toxunmalara səbəb olurdu
+            height: 42px;
             clicked => { root.delete-it(); }
             IconTrash {
-                x: 9px; y: 19px; width: 16px; height: 16px;
+                x: 9px; y: 13px; width: 16px; height: 16px;
                 stroke: del.has-hover ? #e03131 : Theme.text-3; stroke-width: 1.8px;
             }
         }

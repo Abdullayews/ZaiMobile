@@ -355,7 +355,7 @@ fn run_once(
     // ---------- serverdə saxla ----------
     if !stopped || !full.is_empty() {
         let chat_obj = build_chat_update(
-            chat_id, chat_title, model, history, user_msg_id, assistant_msg_id, prompt, &full, files,
+            chat_id, chat_title, model, effort, history, user_msg_id, assistant_msg_id, prompt, &full, files,
         );
         let _ = client.chat_update(token, &chat_obj);
     }
@@ -376,6 +376,7 @@ fn build_chat_update(
     chat_id: &str,
     title: &str,
     model: &str,
+    effort: &str,
     history: &[(String, String)],
     user_msg_id: &str,
     assistant_msg_id: &str,
@@ -461,7 +462,7 @@ fn build_chat_update(
         ],
         "mcp_servers": [],
         "enable_thinking": true,
-        "reasoning_effort": "high",
+        "reasoning_effort": effort,
         "auto_web_search": false,
         "message_version": 1,
         "extra": {},

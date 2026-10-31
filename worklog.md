@@ -277,3 +277,28 @@ Yoxlama: cargo check/clippy/test (9 test) keçdi. CANLI send sınağı:
 sandbox IP-si /api/v2/chat/completions POST üçün WAF blokludur (curl:
 POST→403, GET auths→200) — mühit məhdudiyyəti, kod regressiyası deyil;
 real cihazda (fərqli IP) yoxlanmalıdır.
+
+## Loop sessiyası — İterasiya 4: markdown nömrəli siyahılar + tarixçə səhifələməsi + kiçik düzəlişlər
+
+1. Nömrəli siyahı (markdown.rs): yalnız təkrəqəmli "1. " tanınırdı — "10. ",
+   "123. " paraqraf kimi render olunurdu. İndi istənilən rəqəm sayı
+   tanınır; "1.5" kimi versiya mətni siyahı SAYILMIR (". " boşluq tələb
+   edir). Test əlavə olundu (indi 10 test).
+
+2. Tarixçə səhifələməsi (api.rs conversations): yalnız ?page=1 çəkilirdi —
+   1-ci səhifədən çox söhbəti olan istifadəçinin tarixçəsi kəsilirdi.
+   İndi səhifələr ardıcıl çəkilir (maks 10 səhifə / 300 söhbət); API
+   səhifələməni iqnor edib eyni cavabı qaytarsa (ilk id təkrarı) dayanır;
+   qısa səhifə = sonuncu.
+
+3. Lazy-parse keşi (state.slint + controller.rs): "artıq parse olunub"
+   yoxlaması `blocks.row_count() > 0` idi — "***" kimi 0 bloka parse
+   olunan mətnlər hər scroll-da yenidən parse olunurdu. ChatMessage-ə
+   `parsed` flag-i əlavə olundu; user/xəta sətirləri hazır doğulur.
+
+4. Sidebar silmə toxunma sahəsi (sidebar.slint): del TouchArea 54px idi,
+   sətirin daxili hündürlüyü 42px → 6px qonşu sətirlərin üstünə daşırdı
+   (yanlış silmə riski). 42px-ə salındı.
+
+5. chat_update (stream.rs): reasoning_effort həmişə "high" hardkod
+   edilirdi — seçilmiş effort indi saxlanılır.
