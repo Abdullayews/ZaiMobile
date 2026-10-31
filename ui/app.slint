@@ -14,9 +14,13 @@ import { ModelPopup, PhaseToast, FilePickerModal } from "modals.slint";
 
 
 export component AppWindow inherits Window {
-    // Desktop preview ölçüsü (Android-də tam ekran bu dəyəri əvəz edir)
-    width: 412px;
-    height: 915px;
+    // Preferred (initial) size only. A FIXED width/height would pin the window
+    // to 412x915 on Android instead of letting it fill the real screen
+    // (the user's device is 559x1241 logical — a fixed 412x915 left ~26% of
+    // the display black). Android uses the native window size; desktop opens
+    // at this size.
+    preferred-width: 412px;
+    preferred-height: 915px;
     background: Theme.page;
 
     // ---- Açılış splash (booting) ----
@@ -36,13 +40,19 @@ export component AppWindow inherits Window {
     }
 
     // ---- Login (authed olmayana qədər) ----
-    if !App.authed && !App.booting : LoginScreen { }
+    if !App.authed && !App.booting : LoginScreen {
+        status-inset: root.safe-area-insets.top;
+        nav-inset: root.safe-area-insets.bottom;
+    }
 
     // ---- Əsas chat ----
-    if App.authed && !App.booting : ChatScreen { }
+    if App.authed && !App.booting : ChatScreen {
+        status-inset: root.safe-area-insets.top;
+        nav-inset: root.safe-area-insets.bottom;
+    }
 
     // ---- Overlaylər ----
-    if App.sidebar-open : Sidebar { }
+    if App.sidebar-open : Sidebar { status-inset: root.safe-area-insets.top; }
     if App.model-popup-open : ModelPopup { }
     if App.picker-open : FilePickerModal { }
     PhaseToast { }

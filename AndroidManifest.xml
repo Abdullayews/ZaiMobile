@@ -15,7 +15,7 @@
         android:icon="@mipmap/ic_launcher"
         android:hasCode="false"
         android:allowBackup="false"
-        android:theme="@android:style/Theme.Material.NoActionBar">
+        android:theme="@style/Theme.Zai">
 
         <activity
             android:name="android.app.NativeActivity"

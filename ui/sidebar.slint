@@ -63,6 +63,9 @@ component ConvRow inherits Rectangle {
 }
 
 export component Sidebar inherits Rectangle {
+    // Status bar inset (edge-to-edge): keeps the header row below it
+    in property <length> status-inset: 0px;
+
     // arxa fon
     background: #80000000;
 
@@ -79,7 +82,10 @@ export component Sidebar inherits Rectangle {
         background: Theme.nav-bg;
 
         HorizontalLayout {
-            padding: 12px;
+            padding-left: 12px;
+            padding-right: 12px;
+            padding-top: 12px + root.status-inset;
+            padding-bottom: 12px;
             spacing: 8px;
 
             VerticalLayout {

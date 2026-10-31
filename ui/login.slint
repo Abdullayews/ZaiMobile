@@ -135,6 +135,10 @@ component SocialButton inherits Rectangle {
 // ============================================================
 
 export component LoginScreen inherits Rectangle {
+    // Edge-to-edge insets (0 on desktop)
+    in property <length> status-inset: 0px;
+    in property <length> nav-inset: 0px;
+
     background: Theme.page;
 
     Rectangle {
@@ -155,8 +159,8 @@ export component LoginScreen inherits Rectangle {
                 width: parent.width;
                 padding-left: 28px;
                 padding-right: 28px;
-                padding-top: 48px;
-                padding-bottom: 24px;
+                padding-top: 48px + root.status-inset;
+                padding-bottom: 24px + root.nav-inset;
                 spacing: 14px;
 
                 // ============ ADDIM 0: Welcome ============

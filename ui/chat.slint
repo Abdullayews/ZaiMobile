@@ -8,7 +8,7 @@ import { App } from "state.slint";
 import { MessageBlock, ChatMessage, Attachment } from "state.slint";
 import { ListView } from "std-widgets.slint";
 import {
-    IconPaperclip, IconStop, IconCopy, IconCheck, IconRefresh, IconChevronDown,
+    IconPlus, IconStop, IconCopy, IconCheck, IconRefresh, IconChevronDown,
     IconArrowDown, IconAlert, IconSquarePen, IconX, IconPanelLeft, SendArrow,
     IconImage, IconFileDoc, IconVideoFile,
 } from "icons.slint";
@@ -309,84 +309,101 @@ component MessageRow inherits VerticalLayout {
 
 component SuggestionCard inherits Rectangle {
     in property <image> img;
-    // Şəklin təbii aspekt nisbətinə uyğun hündürlük (en 96px sabit).
-    // QEYD: Image-də yalnız width qoymaq olmaz — explicit width həm də elementin
-    // max-width-i kimi yayılır və GridLayout sütununu kartın min-eninə sıxır
-    // (sınaqla təsdiqlənib: kartlar 119px yerinə 177px olmalı idi).
-    in property <length> img-h: 55px;
     in property <string> label;
     callback picked(string);
 
-    horizontal-stretch: 1;
-    height: 118px;
-    background: ta.has-hover ? Theme.hover : Theme.surface;
-    border-radius: 12px;
-    border-width: 1px;
-    border-color: Theme.border;
+    // Web-exact card: total 164 = 140 (box) + 6 (gap) + 18 (label).
+    // The button itself is transparent on the web; only the inner box shows.
+    height: 164px;
+    background: transparent;
 
     ta := TouchArea {
         clicked => { root.picked(root.label); }
     }
 
-    VerticalLayout {
-        alignment: center;
-        padding: 12px;
-        spacing: 10px;
-        // Şəkli mərkəzlə: HLayout alignment:center həm mərkəzləyir, həm də
-        // kartın max-width-ini şəklin eni ilə məhdudlaşdırmır (sütun genişlənir)
-        HorizontalLayout {
-            alignment: center;
-            Image {
-                source: root.img;
-                width: 96px;
-                height: root.img-h;
-            }
+    // Visual box: web .rounded-2xl (16px) + bg-overlay, no border, overflow-hidden
+    Rectangle {
+        y: 0;
+        height: 140px;
+        width: 100%;
+        background: ta.has-hover ? Theme.hover : Theme.overlay;
+        border-radius: 16px;
+        clip: true;
+
+        // Image region: web inset-x-13px / top-25px / -bottom-1px => 116px tall.
+        // image-fit:contain reproduces the web object-contain behavior for every
+        // card (all source arts are wide), so no per-image height tuning is needed.
+        Image {
+            x: 13px;
+            y: 25px;
+            width: parent.width - 26px;
+            height: 116px;
+            source: root.img;
+            image-fit: contain;
         }
-        Text {
-            text: root.label;
-            font-size: 13px;
-            color: Theme.text-2;
-            font-family: Theme.font-body;
-            horizontal-alignment: center;
-        }
+    }
+
+    // Label: web 13px/500 text-2, 6px below the box, centered
+    Text {
+        y: 146px;
+        height: 18px;
+        width: 100%;
+        text: root.label;
+        font-size: 13px;
+        font-weight: 500;
+        color: Theme.text-2;
+        font-family: Theme.font-body;
+        horizontal-alignment: center;
     }
 }
 
 component WelcomeContent inherits Rectangle {
     callback pick-suggestion(string);
 
-    VerticalLayout {
-        alignment: center;
+    // Web behavior: the empty-state content is anchored to the TOP of the
+    // message area (fixed paddings), the composer is bottom-anchored, and the
+    // gap between them grows with the screen height. Scrollable when tight.
+    Flickable {
+        x: 0; y: 0;
+        width: 100%;
         height: 100%;
-        padding-left: Theme.screen-pad;
-        padding-right: Theme.screen-pad;
-        spacing: 26px;
+        content-width: parent.width;
+        content-height: wel.preferred-height;
 
-        Text {
-            text: "More than coding...";
-            font-family: Theme.font-serif;
-            font-size: 34px;
-            font-weight: 700;
-            color: Theme.text;
-            horizontal-alignment: center;
-            wrap: word-wrap;
-        }
+        wel := VerticalLayout {
+            width: parent.width;
+            // On a phone: status(24) + nav(48) + 24 => heading at ~96px from
+            // the window top, exactly like the web (h1 at 96px in a 412/559 viewport)
+            padding-top: 24px;
+            padding-left: Theme.screen-pad;
+            padding-right: Theme.screen-pad;
+            spacing: 24px;   // web: gap-6 between the h1 row and the grid
 
-        // 2 sütunlu şəbəkə (veb kimi: 2+2+1)
-        // img-h: hər PNG-nin təbii aspektinə görə (en/çəkil nisbəti, en=96px)
-        GridLayout {
-            spacing: 10px;
-            Row {
-                SuggestionCard { img: @image-url("../assets/cards/fullstack.png"); img-h: 55px; label: "Full-Stack"; picked(t) => { root.pick-suggestion(t); } }
-                SuggestionCard { img: @image-url("../assets/cards/writing.png"); img-h: 54px; label: "Writing"; picked(t) => { root.pick-suggestion(t); } }
+            // Web: 24px/700 serif, LEFT-aligned (not centered)
+            Text {
+                width: 100%;
+                text: "More than coding...";
+                font-family: Theme.font-serif;
+                font-size: 24px;
+                font-weight: 700;
+                color: Theme.text;
             }
-            Row {
-                SuggestionCard { img: @image-url("../assets/cards/data.png"); img-h: 66px; label: "Data Insight"; picked(t) => { root.pick-suggestion(t); } }
-                SuggestionCard { img: @image-url("../assets/cards/slides.png"); img-h: 55px; label: "PPT"; picked(t) => { root.pick-suggestion(t); } }
-            }
-            Row {
-                SuggestionCard { img: @image-url("../assets/cards/web.png"); img-h: 55px; label: "Web Site"; picked(t) => { root.pick-suggestion(t); } }
-                Rectangle { }
+
+            // 2-column responsive grid (web: 2+2+1, last cell left empty)
+            GridLayout {
+                spacing: 16px;
+                Row {
+                    SuggestionCard { img: @image-url("../assets/cards/fullstack.png"); label: "Full-Stack"; picked(t) => { root.pick-suggestion(t); } }
+                    SuggestionCard { img: @image-url("../assets/cards/writing.png"); label: "Writing"; picked(t) => { root.pick-suggestion(t); } }
+                }
+                Row {
+                    SuggestionCard { img: @image-url("../assets/cards/data.png"); label: "Data Insight"; picked(t) => { root.pick-suggestion(t); } }
+                    SuggestionCard { img: @image-url("../assets/cards/slides.png"); label: "PPT"; picked(t) => { root.pick-suggestion(t); } }
+                }
+                Row {
+                    SuggestionCard { img: @image-url("../assets/cards/web.png"); label: "Web Site"; picked(t) => { root.pick-suggestion(t); } }
+                    Rectangle { }
+                }
             }
         }
     }
@@ -398,7 +415,10 @@ component Composer inherits Rectangle {
     callback send-msg(string);
     callback open-models();
 
-    background: Theme.surface;
+    // Web-exact surface: --color-bg-bg (dark #2b2b2b / light #fff),
+    // 1px hairline border, r24 capsule. Height: 132px empty
+    // (12 + 52 + 24 + 30 + 12 + 2 border), like the web.
+    background: Theme.bg;
     border-radius: Theme.capsule-r;
     border-width: 1px;
     border-color: Theme.border;
@@ -409,11 +429,14 @@ component Composer inherits Rectangle {
     property <bool> can-send: (App.input-text != "" || App.attachments.length > 0) && !App.streaming;
 
     VerticalLayout {
-        padding: 14px;
-        padding-bottom: 10px;
-        spacing: 10px;
+        // web: py-3 (12px) + px-3.5 (14px)
+        padding: 12px;
+        padding-left: 14px;
+        padding-right: 14px;
+        // web: 24px between the text area and the control row
+        spacing: 24px;
 
-        // əlavə önizləmələri (yuxarı sıra)
+        // attachment chips (row above the text area)
         if App.attachments.length > 0 : HorizontalLayout {
             spacing: 6px;
             alignment: start;
@@ -432,11 +455,10 @@ component Composer inherits Rectangle {
             }
         }
 
-        // mətn sahəsi + placeholder. Uzun mətn Flickable ilə kursora sürüşdürülür
-        // (əvvəl: TextInput 160px-də kəsilirdi, kursor görünmürdü — Slint
-        // TextEditBase-in cursor-position-changed məntiqi tətbiq olunub)
+        // Text area: web min-h-52px, 16px font. Long text is scrolled to the
+        // cursor via Flickable (Slint TextEditBase cursor logic).
         Rectangle {
-            height: Math.min(input.preferred-height, Theme.composer-max-h);
+            height: Math.min(Math.max(input.preferred-height, 52px), Theme.composer-max-h);
             clip: true;
             input-flick := Flickable {
                 x: 0; y: 0;
@@ -450,7 +472,7 @@ component Composer inherits Rectangle {
                     width: parent.width;
                     height: self.preferred-height;
                     text <=> App.input-text;
-                    font-size: 15px;
+                    font-size: 16px;
                     font-family: Theme.font-body;
                     color: Theme.text;
                     wrap: word-wrap;
@@ -469,62 +491,58 @@ component Composer inherits Rectangle {
                 x: 0; y: 0;
                 text: "Send a Message";
                 color: Theme.placeholder;
-                font-size: 15px;
+                font-size: 16px;
                 font-family: Theme.font-body;
             }
         }
 
-        // alt sıra
+        // Control row: web 30px tall, left "More" (plus) icon 30x30,
+        // model chip as plain 16px text + chevron, send circle 30px.
         HorizontalLayout {
             spacing: 8px;
-            alignment: start;
 
+            // "More" button (web: plus icon, color text-3)
             clip := TouchArea {
-                width: 32px; height: 32px;
+                width: 30px; height: 30px;
                 clicked => { App.open-picker(); }
-                IconPaperclip {
-                    x: 7px; y: 7px; width: 18px; height: 18px;
+                IconPlus {
+                    x: 5px; y: 5px; width: 20px; height: 20px;
                     stroke: clip.has-hover ? Theme.text : Theme.text-3;
-                    stroke-width: 1.8px; fill: transparent;
+                    stroke-width: 2px;
                 }
             }
             Rectangle { horizontal-stretch: 1; }
 
-            // model seçici
+            // model selector (web: plain text + chevron, no pill)
             mbtn := TouchArea {
-                width: mrow.preferred-width + 18px;
-                height: 32px;
+                width: mrow.preferred-width + 20px;
+                height: 30px;
                 clicked => { root.open-models(); }
-                Rectangle {
-                    y: 1px;
-                    height: 30px;
-                    border-radius: 15px;
-                    border-width: 1px;
-                    border-color: mbtn.has-hover ? Theme.border-strong : Theme.border;
-                    mrow := HorizontalLayout {
-                        padding-left: 10px;
-                        padding-right: 6px;
-                        spacing: 3px;
-                        alignment: center;
-                        Text {
-                            text: App.model-name;
-                            font-size: 13px;
-                            color: Theme.text;
-                            font-family: Theme.font-body;
-                            vertical-alignment: center;
-                        }
-                        IconChevronDown {
-                            width: 14px; height: 14px;
-                            stroke: Theme.text-2; stroke-width: 2px;
-                        }
+                mrow := HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    spacing: 4px;
+                    alignment: center;
+                    Text {
+                        text: App.model-name;
+                        font-size: 16px;
+                        font-weight: 400;
+                        color: Theme.text;
+                        font-family: Theme.font-body;
+                        vertical-alignment: center;
+                    }
+                    IconChevronDown {
+                        width: 16px; height: 16px;
+                        stroke: Theme.text-2; stroke-width: 2px;
                     }
                 }
             }
 
-            // göndər / dayandır
+            // send / stop (web: 30x30 circle; disabled bg --color-bg-disabled,
+            // disabled icon text-2)
             Rectangle {
-                width: 34px; height: 34px;
-                border-radius: 17px;
+                width: 30px; height: 30px;
+                border-radius: 15px;
                 background: (root.can-send || App.streaming) ? Theme.btn-dark : Theme.disabled-bg;
 
                 sbtn := TouchArea {
@@ -536,12 +554,12 @@ component Composer inherits Rectangle {
                         }
                     }
                     if App.streaming : IconStop {
-                        x: 9px; y: 9px; width: 16px; height: 16px;
+                        x: 7px; y: 7px; width: 16px; height: 16px;
                         fill: Theme.btn-text; stroke: Theme.btn-text; stroke-width: 1px;
                     }
                     if !App.streaming : SendArrow {
-                        x: 8px; y: 8px; width: 18px; height: 18px;
-                        stroke: root.can-send ? Theme.btn-text : Theme.placeholder;
+                        x: 6px; y: 6px; width: 18px; height: 18px;
+                        stroke: root.can-send ? Theme.btn-text : Theme.text-2;
                         stroke-width: 2.4px;
                     }
                 }
@@ -555,6 +573,10 @@ component Composer inherits Rectangle {
 // ============================================================
 
 export component ChatScreen inherits Rectangle {
+    // Edge-to-edge insets (set from the window safe-area; 0 on desktop)
+    in property <length> status-inset: 0px;
+    in property <length> nav-inset: 0px;
+
     background: Theme.page;
 
     forward-focus: input-scope;
@@ -570,77 +592,82 @@ export component ChatScreen inherits Rectangle {
     }
 
     VerticalLayout {
-        // ---------- NAV ----------
+        // ---------- NAV (bg extends under the status bar; content below it) ----------
         Rectangle {
-            height: Theme.nav-h;
+            height: Theme.nav-h + root.status-inset;
             background: Theme.nav-bg;
 
-            HorizontalLayout {
-                padding-left: 8px;
-                padding-right: 12px;
-                alignment: start;
-                spacing: 2px;
+            Rectangle {
+                y: root.status-inset;
+                height: Theme.nav-h;
+                width: 100%;
 
-                TouchArea {
-                    width: 40px; height: 40px; y: 4px;
-                    clicked => { App.sidebar-open = true; }
-                    IconPanelLeft {
-                        x: 10px; y: 10px; width: 20px; height: 20px;
-                        stroke: Theme.text; stroke-width: 2px;
-                    }
-                }
-                TouchArea {
-                    width: 40px; height: 40px; y: 4px;
-                    clicked => { App.new-chat(); }
-                    IconSquarePen {
-                        x: 10px; y: 10px; width: 20px; height: 20px;
-                        stroke: Theme.text; stroke-width: 2px;
-                    }
-                }
+                HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 12px;
+                    spacing: 2px;
 
-                Rectangle { width: 6px; }
-
-                Text {
-                    text: App.chat-title;
-                    font-size: 15px;
-                    font-weight: 700;
-                    color: Theme.text;
-                    font-family: Theme.font-body;
-                    vertical-alignment: center;
-                    overflow: elide;
-                    horizontal-stretch: 1;
-                }
-                Rectangle { width: 6px; }
-
-                acct := TouchArea {
-                    width: Math.min(120px, acct-box.preferred-width + 18px);
-                    height: 32px; y: 8px;
-                    clicked => {
-                        if (App.is-guest) {
-                            App.login-error = "";
-                            App.token-auto-detected = false;
-                            App.login-step = 0;
-                            App.authed = false;
-                        } else {
-                            App.sidebar-open = true;
+                    TouchArea {
+                        width: 40px; height: 40px; y: 4px;
+                        clicked => { App.sidebar-open = true; }
+                        IconPanelLeft {
+                            x: 10px; y: 10px; width: 20px; height: 20px;
+                            stroke: Theme.text-2; stroke-width: 2px;
                         }
                     }
-                    Rectangle {
-                        y: 1px;
-                        height: 30px;
-                        width: parent.width;
-                        border-radius: 15px;
-                        background: App.is-guest ? Theme.btn-dark : Theme.subtle;
-                        acct-box := HorizontalLayout {
-                            padding-left: 12px; padding-right: 12px;
-                            alignment: center;
-                            Text {
-                                text: App.is-guest ? "Sign in" : App.user-name;
-                                font-size: 13px;
-                                color: App.is-guest ? Theme.btn-text : Theme.text;
-                                font-family: Theme.font-body;
-                                vertical-alignment: center;
-                                overflow: elide;
+                    TouchArea {
+                        width: 40px; height: 40px; y: 4px;
+                        clicked => { App.new-chat(); }
+                        IconSquarePen {
+                            x: 10px; y: 10px; width: 20px; height: 20px;
+                            stroke: Theme.text-2; stroke-width: 2px;
+                        }
+                    }
+
+                    Rectangle { width: 6px; }
+
+                    Text {
+                        text: App.chat-title;
+                        font-size: 15px;
+                        font-weight: 700;
+                        color: Theme.text;
+                        font-family: Theme.font-body;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                    }
+                    Rectangle { width: 6px; }
+
+                    acct := TouchArea {
+                        // web: 32px tall, r6, 14px text
+                        width: Math.min(120px, acct-box.preferred-width + 24px);
+                        height: 32px; y: 8px;
+                        clicked => {
+                            if (App.is-guest) {
+                                App.login-error = "";
+                                App.token-auto-detected = false;
+                                App.login-step = 0;
+                                App.authed = false;
+                            } else {
+                                App.sidebar-open = true;
+                            }
+                        }
+                        Rectangle {
+                            height: 32px;
+                            width: parent.width;
+                            border-radius: Theme.btn-r;
+                            background: App.is-guest ? Theme.btn-dark : Theme.subtle;
+                            acct-box := HorizontalLayout {
+                                padding-left: 12px; padding-right: 12px;
+                                alignment: center;
+                                Text {
+                                    text: App.is-guest ? "Sign in" : App.user-name;
+                                    font-size: 14px;
+                                    color: App.is-guest ? Theme.btn-text : Theme.text;
+                                    font-family: Theme.font-body;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
                             }
                         }
                     }
@@ -738,15 +765,17 @@ export component ChatScreen inherits Rectangle {
             }
         }
 
-        // ---------- COMPOSER ----------
+        // ---------- COMPOSER + FOOTER (bottom-anchored, web-exact) ----------
         Rectangle {
             vertical-stretch: 0;
             VerticalLayout {
-                padding-left: 14px;
-                padding-right: 14px;
+                padding-left: Theme.screen-pad;
+                padding-right: Theme.screen-pad;
                 padding-top: 6px;
-                padding-bottom: 10px;
-                spacing: 6px;
+                // web: footer mb-2px; keep clear of the gesture/nav bar
+                padding-bottom: 2px + root.nav-inset;
+                // web: 24px between the composer and the footer lines
+                spacing: 24px;
                 alignment: start;
 
                 Composer {
@@ -754,14 +783,27 @@ export component ChatScreen inherits Rectangle {
                     open-models() => { App.model-popup-open = true; }
                 }
 
-                Text {
-                    height: 14px;
-                    text: "By using Z.ai you agree to our Terms of Service and Privacy Policy";
-                    font-size: 10px;
-                    color: Theme.text-3;
-                    font-family: Theme.font-body;
-                    horizontal-alignment: center;
-                    wrap: word-wrap;
+                // web footer: two centered lines, gap-2 (8px)
+                VerticalLayout {
+                    spacing: 8px;
+                    Text {
+                        height: 16px;
+                        width: 100%;
+                        text: "Generated by AI. For reference only.";
+                        font-size: 10px;
+                        color: Theme.text;
+                        font-family: Theme.font-body;
+                        horizontal-alignment: center;
+                    }
+                    Text {
+                        height: 16px;
+                        width: 100%;
+                        text: "Terms of Service and Privacy Policy";
+                        font-size: 10px;
+                        color: Theme.text;
+                        font-family: Theme.font-body;
+                        horizontal-alignment: center;
+                    }
                 }
             }
         }
