@@ -121,9 +121,10 @@ object Fullscreen {
             }
         }
         // Claude app dərsi: Android 12+ — tapjacking-ə qarşı overlay
-        // pəncərələrini gizlət (icazə tələb etmir, banking app-ləri edir).
+        // pəncərələrini gizlət. icazə manifest-də elan olunub (HIDE_OVERLAY_WINDOWS,
+        // normal səviyyə); buna baxmayaraq müdafiəçi şəkildə çağırılır.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            activity.window.setHideOverlayWindows(true)
+            try { activity.window.setHideOverlayWindows(true) } catch (_: Exception) {}
         }
     }
 
