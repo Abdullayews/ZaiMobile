@@ -346,3 +346,12 @@ real cihazda (fərqli IP) yoxlanmalıdır.
 
 2. Ölü state-lər (state.slint): need-refresh (heç yerde oxunmur/yazılmır)
    və signed-in (yalnız yazılır, heç yerde oxunmur) silindi.
+
+## Loop sessiyası — İterasiya 8: açıq söhbətin silinməsi + asset təmizliyi
+
+1. AÇIQ SÖHBƏTİ SİLMƏK (controller.rs): istifadəçi hazırda açıq olan söhbəti
+   siləndə chat_id silinmiş söhbətə işarə etməyə davam edirdi → növbəti
+   göndəriş silinmiş chat_id ilə gedib xəta verərdi. İndi: silinən id cari
+   söhbətdirsə, söhbət tam sıfırlanır (reset_conversation).
+
+2. assets/cards/logo.svg (11KB) — heç yerdə istifadə olunmur, silindi.

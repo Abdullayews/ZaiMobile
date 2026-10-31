@@ -1459,6 +1459,12 @@ pub fn run() {
             std::thread::spawn(move || {
                 let token = l(&core_cc.persisted).token.clone();
                 let _ = core_cc.client.chat_delete(&token, &id_s);
+                // AÇIQ söhbət silindisə: chat_id köhnə (silinmiş) söhbətə
+                // işarə edirdi — göndəriş xəta verərdi. Söhbəti sıfırla.
+                let was_open = *l(&core_cc.chat_id) == id_s;
+                if was_open {
+                    reset_conversation(&core_cc, &weak_cc);
+                }
                 spawn_load_conversations(core_cc, weak_cc);
             });
         });
