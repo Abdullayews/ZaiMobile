@@ -48,6 +48,9 @@ jobs:
           echo "VERSION_NAME=$VN" >> $GITHUB_ENV
           echo "versionCode=$VC versionName=$VN → $APK"
 
+      - name: Testlər (unit + Robolectric smoke — pushdan əvvəl məcburi)
+        run: gradle test --no-daemon
+
       - name: Build (release)
         run: gradle assembleRelease --no-daemon -PzaiVersionCode=$VC -PzaiVersionName=$VERSION_NAME
 
