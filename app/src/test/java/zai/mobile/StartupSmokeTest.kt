@@ -1,179 +1,279 @@
 package zai.mobile
 
-import android.content.Context
+import android.app.Application
+import android.content.Intent
+import android.os.Looper
 import android.view.View
 import android.view.ViewGroup
-import android.widget.LinearLayout
+import android.widget.EditText
+import android.widget.ImageButton
 import android.widget.TextView
 import androidx.test.core.app.ApplicationProvider
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.setMain
 import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows
 import org.robolectric.annotation.Config
-import java.io.BufferedReader
-import java.io.InputStreamReader
-import java.net.InetAddress
-import java.net.ServerSocket
-import java.net.Socket
+import zai.mobile.state.Session
+import zai.mobile.ui.BootActivity
+import zai.mobile.ui.ChatActivity
+import zai.mobile.ui.LoginActivity
 
 /**
- * BAŞLANĞIC SMOKE TESTİ — "proqram açılmır" halını JVM-də təkrarlamaq üçün
- * hər iki Activity-nin onCreate + tam UI quruluşu işə salınır.
- * Şəbəkə: lokal ServerSocket (hermetik, sürətli) — baseOverride ilə yönləndirilir.
+ * "Proqram açılır" sübutu — hər ekranı Robolectric-də REAL lifecycle ilə açır,
+ * skriptləşdirilmiş (real formalarlı) transportla tam axını işə salır.
+ * Bu, istifadəçinin "app açılmır" probleminin bütün sinifini yoxlayır.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class StartupSmokeTest {
 
-    private var server: Tiny401Server? = null
+    private lateinit var script: ScriptedTransport
+
+    @Before
+    fun setUp() {
+        Dispatchers.setMain(UnconfinedTestDispatcher())
+        App.resetForTest()
+        App.ioForTest = UnconfinedTestDispatcher()
+        script = ScriptedTransport()
+        App.transportForTest = script
+        commonScripts()
+    }
 
     @After
     fun tearDown() {
-        ZaiApi.baseOverride = null
-        server?.stop()
+        App.resetForTest()
+        Dispatchers.resetMain()
     }
 
-    @Test
-    fun loginActivity_buildsAndShowsSignIn() {
-        ZaiApi.baseOverride = startLocalServer()
-        val controller = Robolectric.buildActivity(LoginActivity::class.java).setup()
-        val a = controller.get()
-        val texts = allTexts(a.findViewById(android.R.id.content))
-        assertTrue("başlıq yoxdur: $texts", texts.any { it.contains("Sign in to Z.ai") })
-        assertTrue(texts.any { it.contains("Continue with Email") })
-        assertTrue(texts.any { it.contains("Skip for now") })
-        assertTrue(texts.any { it.contains("Terms of Service") })
-        controller.destroy()
-    }
-
-    @Test
-    fun chatActivity_buildsWithAuthAndWelcome() {
-        ZaiApi.baseOverride = startLocalServer()
-        // saxta auth seed — Login-i ötür, birbaşa Chat açılır
-        val ctx = ApplicationProvider.getApplicationContext<Context>()
-        ctx.getSharedPreferences("zai_state", Context.MODE_PRIVATE).edit()
-            .putString("token", "eyJfake.token.for.smoke")
-            .putString("user_id", "u-smoke")
-            .putString("user_name", "SmokeUser")
-            .putBoolean("is_guest", false)
-            .putString("device_id", "uid_smoketest123")
-            .commit()
-
-        val controller = Robolectric.buildActivity(ChatActivity::class.java).setup()
-        val a = controller.get()
-        val texts = allTexts(a.findViewById(android.R.id.content))
-        assertTrue("welcome başlığı yoxdur: $texts", texts.any { it.contains("More than coding") })
-        assertTrue("istifadəçi adı yoxdur: $texts", texts.any { it.contains("SmokeUser") })
-        assertTrue("kompozitor yoxdur: $texts", texts.any { it.contains("Send a Message") })
-        assertTrue("footer yoxdur: $texts", texts.any { it.contains("By using Z.ai") })
-        assertTrue("model çipi yoxdur: $texts", texts.any { it.contains("GLM") })
-        controller.destroy()
-    }
-
-    @Test
-    fun markdown_renderProducesViews() {
-        val ctx = ApplicationProvider.getApplicationContext<Context>()
-        val box = LinearLayout(ctx)
-        Markdown.render(
-            ctx,
-            MarkdownParse.parse(
-                "# H1 başlıq\n\nSalam **dünya** `kod` [keçid](https://x.y)\n\n" +
-                    "```kotlin\nfun x() {}\n```\n\n- madde\n1. birinci\n> sitat"),
-            box)
-        assertTrue("kifayət qədər view yoxdur: ${box.childCount}", box.childCount >= 6)
-        val texts = allTexts(box)
-        assertTrue(texts.any { it.contains("H1 başlıq") })
-        assertTrue(texts.any { it.contains("fun x() {}") })
-        assertTrue(texts.any { it.contains("madde") })
-    }
-
-    @Test
-    fun crashLog_roundTrip() {
-        val ctx = ApplicationProvider.getApplicationContext<Context>()
-        CrashLog.install(ctx)
-        val f = java.io.File(ctx.filesDir, "last_crash.txt")
-        f.parentFile?.mkdirs()
-        f.writeText("time: test\ncrash: simulated")
-        assertTrue(f.exists())
-        // Login açılışı crash hesabatını göstərib faylı silməlidir
-        ZaiApi.baseOverride = startLocalServer()
-        val controller = Robolectric.buildActivity(LoginActivity::class.java).setup()
-        assertTrue("crash faylı silinməlidir", !f.exists())
-        controller.destroy()
-    }
-
-    // ---------------- lokal HTTP server (xalis java.net) ----------------
-
-    private fun startLocalServer(): String {
-        val s = Tiny401Server()
-        s.start()
-        server = s
-        return s.base()
-    }
-
-    /** Hər sorğuya 401 + JSON qaytaran minik server. */
-    private class Tiny401Server {
-        private val serverSocket = ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"))
-        @Volatile private var running = true
-
-        fun start() {
-            Thread {
-                while (running) {
-                    val socket = try { serverSocket.accept() } catch (_: Exception) { break }
-                    serve(socket)
-                }
-            }.apply { isDaemon = true; name = "tiny401-accept" }.start()
+    private fun commonScripts() {
+        script.on({ it.method == "GET" && it.path == "/" }) { _, _ ->
+            ScriptedTransport.Out(
+                200,
+                mapOf("set-cookie" to listOf("acw_tc=warm123; Path=/")),
+            ) { "".byteInputStream() }
         }
-
-        private fun serve(socket: Socket) {
-            Thread {
-                try {
-                    val reader = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.ISO_8859_1))
-                    // header-ları boş sətirə qədər oxu (GET body-si yoxdur)
-                    while (true) {
-                        val line = reader.readLine() ?: break
-                        if (line.isEmpty()) break
-                    }
-                    val body = """{"detail":"offline test"}""".toByteArray(Charsets.UTF_8)
-                    socket.getOutputStream().apply {
-                        write(
-                            ("HTTP/1.1 401 Unauthorized\r\n" +
-                                "Content-Type: application/json\r\n" +
-                                "Content-Length: ${body.size}\r\n" +
-                                "Connection: close\r\n\r\n").toByteArray(Charsets.ISO_8859_1))
-                        write(body)
-                        flush()
-                    }
-                } catch (_: Exception) {
-                } finally {
-                    runCatching { socket.close() }
-                }
-            }.apply { isDaemon = true; name = "tiny401-serve" }.start()
-        }
-
-        fun stop() {
-            running = false
-            runCatching { serverSocket.close() }
-        }
-
-        fun base(): String = "http://127.0.0.1:${serverSocket.localPort}"
-    }
-
-    // ---------------- köməkçilər ----------------
-
-    private fun allTexts(v: View?): List<String> {
-        val out = mutableListOf<String>()
-        fun walk(x: View) {
-            if (x is TextView) {
-                out += x.text?.toString().orEmpty()
-                if (x is android.widget.EditText) out += x.hint?.toString().orEmpty()
+        script.on({ it.method == "GET" && it.path.startsWith("/api/v1/auths/") }) { call, _ ->
+            if (call.header("Authorization") == null) {
+                ScriptedTransport.ok(
+                    """{"token":"gtok","id":"u1","name":"Guest-1793467000","role":"guest"}""",
+                )
+            } else {
+                ScriptedTransport.ok(
+                    """{"token":"utok","id":"u2","name":"Tester","role":"user"}""",
+                )
             }
-            if (x is ViewGroup) for (i in 0 until x.childCount) walk(x.getChildAt(i))
         }
-        v?.let { walk(it) }
+        script.on({ it.method == "GET" && it.path.startsWith("/api/models") }) { _, _ ->
+            ScriptedTransport.ok(
+                """{"data":[{"id":"x-preview-l","name":"GLM-5.3-Flash",""" +
+                    """"info":{"min_available_level":1,"meta":{"info":{"thinking_effort_level":["low","high","max"]}}}}]}""",
+            )
+        }
+        script.on({ it.method == "POST" && it.path.startsWith("/api/v1/auths/signin") }) { _, _ ->
+            ScriptedTransport.bad(400, "{\"detail\":\"The captcha verification failed.\"}")
+        }
+    }
+
+    // ---- view ağacı axtarışları ----
+
+    private fun <T : View> findAll(root: View, cls: Class<T>, out: ArrayList<T>) {
+        if (cls.isInstance(root)) out.add(cls.cast(root)!!)
+        if (root is ViewGroup) for (i in 0 until root.childCount) findAll(root.getChildAt(i), cls, out)
+    }
+
+    private fun texts(root: View): List<String> {
+        val out = ArrayList<TextView>()
+        findAll(root, TextView::class.java, out)
+        return out.map { it.text.toString() }
+    }
+
+    private fun editTexts(root: View): List<EditText> {
+        val out = ArrayList<EditText>()
+        findAll(root, EditText::class.java, out)
         return out
+    }
+
+    private fun flushMain() {
+        Shadows.shadowOf(Looper.getMainLooper()).runToEndOfTasks()
+    }
+
+    // ---- testlər ----
+
+    @Test
+    fun bootSplashToChatAsGuest() {
+        val controller = Robolectric.buildActivity(BootActivity::class.java)
+        controller.create().start().resume()
+        flushMain()
+
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val next = Shadows.shadowOf(app).nextStartedActivity
+        assertNotNull("ChatActivity açılış niyyəti gəlmədi", next)
+        assertEquals(ChatActivity::class.java.name, next.component?.className)
+        assertTrue(controller.get().isFinishing)
+
+        val session = Session(app)
+        assertEquals("gtok", session.token)
+        assertTrue(session.isGuest)
+        // WAF cookie jar dolub
+        assertTrue(script.calls.first().let { it.method == "GET" && it.path == "/" })
+        assertTrue(script.calls.any { it.header("Cookie")?.contains("acw_tc=warm123") == true })
+    }
+
+    @Test
+    fun bootNetworkErrorShowsRetry() {
+        script.on({ it.method == "GET" && it.path == "/" }) { _, _ ->
+            throw java.io.IOException("no route to host")
+        }
+        val controller = Robolectric.buildActivity(BootActivity::class.java)
+        controller.create().start().resume()
+        flushMain()
+        // error UI görünür; istifadəçi Retry basa bilər
+        val all = texts(controller.get().window.decorView)
+        assertTrue(all.contains(controller.get().getString(R.string.err_title)))
+    }
+
+    @Test
+    fun chatScreenWelcomeAndFullSendFlow() {
+        // söhbət axını skriptləri
+        script.on({ it.method == "POST" && it.path.startsWith("/api/v1/chats/new") }) { _, _ ->
+            ScriptedTransport.ok("{\"id\":\"c1\"}")
+        }
+        script.on({ it.method == "POST" && it.path.startsWith("/api/v2/chat/completions") }) { _, _ ->
+            ScriptedTransport.sse(
+                """{"data":{"message":{"phase":"hidden-thinking"}}}""",
+                """{"data":{"message":{"delta_content":"Hello"}}}""",
+                """{"data":{"message":{"delta_content":" world"}}}""",
+                """{"data":{"message":{"done":true}}}""",
+                "[DONE]",
+            )
+        }
+        script.on({ it.method == "POST" && it.path.startsWith("/api/v1/chats/c1") && it.path != "/api/v1/chats/c1x" }) { _, _ ->
+            ScriptedTransport.ok("{}")
+        }
+        script.on({ it.method == "GET" && it.path.startsWith("/api/v1/chats/c1") }) { _, _ ->
+            ScriptedTransport.ok(
+                """{"title":"Probe title","history":{"currentId":"m1","messages":""" +
+                    """{"m1":{"id":"m1","parentId":null,"role":"assistant","content":"Hello world","timestamp":1}}}}""",
+            )
+        }
+
+        val controller = Robolectric.buildActivity(ChatActivity::class.java)
+        controller.create().start().resume()
+        flushMain()
+        val activity = controller.get()
+        val decor = activity.window.decorView
+
+        // modellər canlı yükləndi
+        assertTrue(texts(decor).contains("GLM-5.3-Flash"))
+        // welcome görünür
+        assertTrue(texts(decor).contains(activity.getString(R.string.welcome_hint)))
+
+        // yaz + göndər (real düymə yolu)
+        val edits = editTexts(decor)
+        assertTrue(edits.isNotEmpty())
+        edits.first().setText("Say Hello")
+        val buttons = ArrayList<ImageButton>()
+        findAll(decor, ImageButton::class.java, buttons)
+        val send = buttons.first { it.contentDescription == activity.getString(R.string.cd_send) }
+        send.performClick()
+        flushMain()
+
+        // istifadə balonu + axın mətni render olundu
+        assertTrue(texts(decor).contains("Say Hello"))
+        assertTrue("axın mətni render olunmalı", texts(decor).contains("Hello world"))
+        // başlıq serverdən gəldi
+        assertTrue(texts(decor).contains("Probe title"))
+        // chats/new və update çağırıldı
+        assertEquals(1, script.countOf("POST", "/api/v1/chats/new"))
+        assertTrue(script.countOf("POST", "/api/v1/chats/c1") >= 1)
+        assertTrue(script.countOf("POST", "/api/v2/chat/completions") >= 1)
+        // imza başlığı gedib
+        val comp = script.calls.first { it.path.startsWith("/api/v2/chat/completions") }
+        assertNotNull(comp.header("X-Signature"))
+        assertTrue(comp.header("X-Signature")!!.length == 64)
+        assertTrue(comp.path.contains("signature_timestamp="))
+        assertTrue(comp.bodyText.contains("\"signature_prompt\":\"Say Hello\""))
+    }
+
+    @Test
+    fun chatModelsFailShowsBannerNoFallback() {
+        // eyni path üçün ilk qayda qalır → təmizlə, yalnız xəta qaydası qoy
+        script.clearRules()
+        script.on({ it.method == "GET" && it.path.startsWith("/api/models") }) { _, _ ->
+            ScriptedTransport.bad(500, "{\"detail\":\"boom\"}")
+        }
+        val controller = Robolectric.buildActivity(ChatActivity::class.java)
+        controller.create().start().resume()
+        flushMain()
+        val activity = controller.get()
+        val all = texts(activity.window.decorView)
+        // statik fallback YOXDUR — düz xəta görünür
+        assertTrue(all.contains(activity.getString(R.string.models_failed)))
+        assertTrue("heç bir model adı göstərilməməli", !all.contains("GLM-5.3-Flash"))
+    }
+
+    @Test
+    fun loginCaptchaFallsBackToToken() {
+        val controller = Robolectric.buildActivity(LoginActivity::class.java)
+        controller.create().start().resume()
+        flushMain()
+        val activity = controller.get()
+        val decor = activity.window.decorView
+
+        val edits = editTexts(decor)
+        assertTrue(edits.size >= 2)
+        edits[0].setText("user@example.com")
+        edits[1].setText("secret123")
+        // Continue düyməsi: textButton -> android.widget.Button
+        val btns = ArrayList<android.widget.Button>()
+        findAll(decor, android.widget.Button::class.java, btns)
+        val cont = btns.first { it.text == activity.getString(R.string.continue_label) }
+        cont.performClick()
+        flushMain()
+
+        // captcha → token addımı görünür
+        assertTrue(texts(decor).contains(activity.getString(R.string.login_captcha_title)))
+        val tokenEdits = editTexts(decor).filter { it.hint == activity.getString(R.string.token_hint) }
+        assertTrue(tokenEdits.isNotEmpty())
+        val jwt = "eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.testtoken." + "x".repeat(80)
+        tokenEdits.first().setText(jwt)
+        val apply = btns.first { it.text == activity.getString(R.string.apply) }
+        apply.performClick()
+        flushMain()
+
+        assertTrue(activity.isFinishing)
+        val session = Session(ApplicationProvider.getApplicationContext<Application>())
+        assertEquals("utok", session.token)
+        assertTrue(!session.isGuest)
+        assertEquals("Tester", session.userName)
+    }
+
+    @Test
+    fun crashReportShowsOnNextBoot() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        java.io.File(app.filesDir, "last_crash.txt").writeText(
+            "time: 1\nstack:\njava.lang.RuntimeException: probe crash",
+        )
+        val controller = Robolectric.buildActivity(BootActivity::class.java)
+        controller.create().start().resume()
+        flushMain()
+        // diaqnoz dialoqu açıldı və fayl təmizləndi
+        assertTrue(!java.io.File(app.filesDir, "last_crash.txt").exists())
+        // dialoq ayrı pəncərədədir — ShadowDialog ilə tap
+        val shown = org.robolectric.shadows.ShadowDialog.getShownDialogs()
+        assertTrue(shown.isNotEmpty())
+        val decor = shown.last().window!!.decorView
+        assertTrue(texts(decor).any { it.contains("probe crash") })
     }
 }

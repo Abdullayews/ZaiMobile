@@ -90,30 +90,32 @@ jobs:
           body: |
             ⚡ **Beta buraxılış** — hər push-da GitHub Actions-da avtomatik qurulur və imzalanır.
 
-            **v7.0 — TAM KOTLIN YENİDƏN YAZILIŞI: 100% native (WebView YOX), adi hesab girişi (email + şifrə).**
+            **SIFIRDAN YENİDƏNQURMA — spec-əsaslı, STATİC DATA QADAĞASI İLƏ.**
+            Köhnə kod tamamilə atıldı; hər şey canlı chat.z.ai API-dən gəlir.
 
-            • **Kotlin + korutinlər**: Rust/Slint kod bazası tamamilə tərk edildi; bütün UI native
-              Android View-lar, bütün şəbəkə HttpURLConnection + korutinlər (Dispatchers.IO), axın
-              Channel ilə UI-yə (Dərs 15-16-nın tətbiqi)
-            • **WebView YOXDUR — webdən data almaq**: REST API (JSON), HTML scraping, SSE (server-sent
-              events) axını — hamısı native HTTP (Dərs 18-in tətbiqi)
-            • **FULLSCREEN düzəldi**: Activity həmişə tam pəncərəni tutur (köhnə Slint 915dp pinləmə
-              bug-u struktur olaraq mümkün deyil); immersive sticky + WindowInsetsController (API 30+)
-              + systemUiVisibility fallback + IME insets (Dərs 20-nin tətbiqi)
-            • **Adi hesab girişi**: Google / Email / Github düymələri (saytın kimi) → email + şifrə
-              ilə birbaşa native giriş (POST /api/v1/auths/signin), "Skip for now" = qonaq tokeni
-            • **Captcha fallback**: sistem brauzerində bir dəfə giriş + tokeni köçürüb "Sign in with
-              token" (clipboard-da eyJ… aşkarlananda təklif olunur)
-            • **Tam veb protokolu**: HMAC-SHA256 imza, /api/v2/chat/completions SSE, WAF retry,
-              çoxsətirli SSE birləşdirmə, avtomatik bərpa (4 cəhd), 401-də çıxış, tarixçə sinxronu
-            • **Chat**: streaming mətn, fazalar (Thinking… / Searching…), markdown (başlıq, qalın,
-              meyl, kod blokları + copy, siyahılar, sitatlar, keçidlər), tap-to-retry
-            • **Söhbətlər**: sidebar (söhbət siyahısı, aç/sil, başlıq sinxronu), model + thinking
-              effort seçimi
-            • **Fayl əlavələri**: SAF seçici (60MB limit) → multipart upload → image_url/video_url/file_url
-              content massivi; böyük şəkillər avtomatik 2048px JPEG-ə endirilir
-            • APK yalnız ~1.7MB (Rust versiyası 9.9MB idi) — yeganə asılılıq coroutines
-            • Kotlin dərs kursu (20 dərs, hamısı testlə doğrulanıb): `kotlin-dersleri/`
+            • **AÇILIŞ DÜZƏLDİ (əsl səbəb tapıldı)**: launch crash-i
+              `setHideOverlayWindows` SecurityException idi — artıq qorunmalıdır
+              və bütün ekranlar Robolectric açılış testləri ilə sübut olunur
+            • **Static data YOXDUR**: modellər/söhbətlər/tarixçə/başlıqlar/adlar —
+              yalnız canlı API; xəta halında düz mesaj + Retry, heç vaxt fallback
+            • **Crash hesabatı**: gözlənilməz çıxışda növbəti açılış stack-i göstərir
+              (kopyalanabilir) — "app açılmır" artıq diaqnoz olunur
+            • **Protokol dəqiqliyi**: HMAC-SHA256 imza (RFC 4231 test vektoru),
+              WAF backoff (hər cəhd üçün fresh imza), çoxsətirli SSE, 150s watchdog,
+              401 qonaq self-heal, 4+3 retry matrisası, stop = qismən mətn
+            • **Giriş**: email+şifrə native; captcha tələbi → sistem brauzeri +
+              token (clipboard eyJ… aşkarlama, razılıqla) və ya əllə token
+            • **Chat**: SSE streaming + fazalar, markdown (kod blokları + copy,
+              keçidlər, siyahılar, sitatlar), tap-to-retry
+            • **Söhbətlər**: canlı siyahı (pagination), server tarixçəsi
+              (currentId→parentId zənciri), server-generasiyalı başlıqlar
+            • **Fayllar**: SAF (icazəsiz) → 60MB limit → 2048px downscale →
+              multipart upload
+            • **Testlər (push-dan əvvəl məcburi)**: 38 test — imza/SSE/WAF/engine/
+              markdown/session + Robolectric açılış smoke + LIVE protokol
+              (datacenter IP-dən tam dövr WAF/captcha ilə məhdud — telefonda işləyir)
+            • APK ~1.2MB; yeganə runtime asılılıq: coroutines; HTTP/JSON/crypto —
+              platform daxili
           files: ${{ env.APK_NAME }}
           prerelease: true
           make_latest: false

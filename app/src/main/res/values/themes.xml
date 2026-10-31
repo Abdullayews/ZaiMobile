@@ -1,13 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Fullscreen (edge-to-edge) baza tema: şəffaf system bar-lar — app bütün
-         ekranı tutur, insets-lər Fullscreen.applyInsets ilə tətbiq olunur. -->
+    <!-- Tək tema, bütün API 24..34; rəngli (qatı) sistem sütunları —
+         insets idarəsi lazım deyil, adjustResize klaviaturanı həll edir. -->
     <style name="Theme.Zai" parent="@android:style/Theme.Material.NoActionBar">
-        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
-        <item name="android:statusBarColor">@android:color/transparent</item>
-        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowBackground">@color/page</item>
+        <item name="android:statusBarColor">@color/page</item>
+        <item name="android:navigationBarColor">@color/page</item>
         <item name="android:windowContentOverlay">@null</item>
-        <item name="android:windowBackground">@color/bg_page</item>
-        <item name="android:colorAccent">#FF4099FF</item>
+        <item name="android:colorAccent">@color/accent</item>
+        <item name="android:textColorPrimary">@color/text</item>
+        <item name="android:textColorSecondary">@color/text2</item>
+        <item name="android:textColor">@color/text</item>
     </style>
 </resources>

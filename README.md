@@ -4,7 +4,10 @@
 
 - ❌ **WebView YOXDUR** — bütün UI native Android View-lar, bütün data native HTTP
 - ❌ **API açarı YOXDUR** — adi hesabla giriş (email + şifrə), veb sessiyası təkrar istifadə olunur
-- ✅ Rust/Slint kod bazası tamamilə tərk edildi — **v7.0-dan etibarən Kotlin**
+- ❌ **Statik data YOXDUR** — modellər, söhbətlər, tarixçə, başlıqlar, adlar: hamısı
+  canlı `chat.z.ai` API-dən gəlir. Yüklənmədikdə düz xəta + Retry göstərilir,
+  heç vaxt saxta fallback yoxdur
+- ✅ Rust dövrü (v6) tam tərk edildi; v7 Kotlin — sıfırdan, spec-əsaslı yenidənqurma
 
 ## Buraxılışlar
 
@@ -13,58 +16,55 @@ olaraq yayımlayır: [releases](https://github.com/Abdullayews/ZaiMobile/release
 
 ## Özəlliklər
 
-- **Giriş**: Google / Email / Github düymələri (saytın görünüşü ilə) → email + şifrə
-  ilə birbaşa native giriş; "Skip for now" = qonaq tokeni; captcha fallback
-  (brauzerdə giriş + token köçürmə, clipboard-da `eyJ…` aşkarlanması)
+- **Boot**: WAF warm-up → token yoxlama / qonaq tokeni → chat; şəbəkə xətasında
+  düz xəta + Retry (saxta data yoxdur). Gözlənilməz çıxış → növbəti açılışda
+  **crash hesabatı** (stack kopyalanabilir)
+- **Giriş** (toolbar "Sign in"): email + şifrə native POST; server captcha tələb
+  etsə → sistem brauzerində bir dəfə giriş + token köçürmə (clipboard-da `eyJ…`
+  aşkarlanır, istifadəçi razılığı ilə) və ya tokeni əllə yapışdır
 - **Chat**: SSE streaming (delta mətn + fazalar: *Thinking… / Searching the web…*),
-  markdown render (başlıqlar, **qalın**, *meyl*, `kod`, kod bloqları + copy,
-  siyahılar, sitatlar, keçidlər), tap-to-retry, dayandır
-- **Söhbətlər**: sidebar — siyahı, açma, silmə, başlıq sinxronu
-- **Modellər**: siyahı + thinking effort (low/high/max) seçimi
-- **Fayl əlavələri**: SAF seçici (60 MB limit) → multipart upload →
-  image_url / video_url / file_url content massivi; böyük şəkillər avtomatik
+  markdown render (başlıqlar, **qalın**, *meyl*, `kod`, keçidlər, siyahılar,
+  sitatlar, kod blokları + copy), tap-to-retry, stop (qismən mətn saxlanılır)
+- **Söhbətlər**: sidebar — canlı siyahı (səhifələnmiş), açma (server tarixçəsi:
+  currentId → parentId zənciri), silmə; başlıqlar server tərəfindən generasiya
+  olunur və axından sonra canlı sinxronlaşır
+- **Modellər**: canlı `/api/models` (qonaq filtri: min_available_level ≤ 1) +
+  thinking effort seçimi — modelin öz səviyyələrindən
+- **Fayl əlavələri**: SAF seçici (heç bir storage icazəsi lazım deyil) → 60 MB
+  limit → multipart upload → image_url / video_url / file_url; böyük şəkillər
   2048px JPEG-ə endirilir
-- **Fullscreen**: immersive sticky + WindowInsetsController (API 30+) +
-  systemUiVisibility fallback + IME insets — tam edge-to-edge
+- **Protokol dəqiqliyi**: HMAC-SHA256 imza (RFC 4231 vektoru ilə test olunub),
+  WAF bloklarında backoff ilə təkrar (hər cəhd üçün YENİ imza), çoxsətirli SSE
+  birləşdirmə, 150s sükut watchdog-u, 401-də qonaq self-heal, rate-limit/busy
+  friendly mesajlar
 
-## Texniki
-
-| | |
-|---|---|
-| Dil | Kotlin 2.0.21, korutinlər (yalnız asılılıq: `kotlinx-coroutines-android`) |
-| UI | Proqramatik native View-lar (XML layout YOX — kompilyator hər xassəni yoxlayır) |
-| Şəbəkə | `HttpURLConnection` + qlobal `CookieManager` (WAF `acw_tc` cookie-ləri) |
-| Protokol | veb tətbiqinin dəqiq protokolu: HMAC-SHA256 imza, `/api/v2/chat/completions` SSE, WAF retry |
-| Build | Gradle 8.10.2 + AGP 8.7.3, compileSdk 34, minSdk 24, JDK 21 |
-| Ölçü | ~1.7 MB APK |
-
-### Struktur
+## Arxitektura
 
 ```
-app/src/main/java/zai/mobile/
-  LoginActivity.kt    giriş ekranı (email/şifrə, qonaq, captcha fallback)
-  ChatActivity.kt     chat UI: nav, sidebar, mesajlar, kompozitor, fullscreen
-  ZaiApi.kt           HTTP client: bütün endpointlər, WAF retry, multipart upload
-  ChatEngine.kt       completion orkestrasiyası: chat yarat → SSE → bərpa → saxla
-  Signature.kt        veb imza alqoritmi (HMAC-SHA256, URLSearchParams)
-  SseParser.kt        SSE hadisə təhlili (4 format, çoxsətirli birləşmə)
-  ChatParse.kt        chat detalı → mesaj zənciri
-  MarkdownParse.kt    markdown parser (xalis Kotlin, JVM-də test olunur)
-  Markdown.kt         markdown → Android spannable view-lar
-  Session.kt          SharedPreferences state (token, model seçimi)
-  Models.kt           data modelləri + sealed StreamEvent
-  Ui.kt               chat.z.ai rəng tokenləri, UI köməkçiləri, fullscreen/insets
-
-kotlin-dersleri/      20 dərslık Kotlin kursu (yazılmazdan əvvəl tamamlanıb)
+zai.mobile
+├── protocol/   # Transport (HttpURLConnection) · ZaiHttp (WAF+cookie) ·
+│               # Signature (HMAC) · Auth · Models · Chats · Completion (SSE) ·
+│               # Upload · Errors — hamısı spec-ə dəqiq uyğun
+├── state/      # Session: state.json (atomik yazma), deviceId (uid_+13)
+├── engine/     # ChatEngine: yaratma → axın (4 cəhd + 3 təkrar) → saxlama
+└── ui/         # Boot/Login/Chat Activity-lər · Markdown · Theme/Widgets
 ```
 
-### Lokal build
+Yeganə runtime asılılıq: `kotlinx-coroutines-android`. HTTP — HttpURLConnection,
+JSON — org.json, crypto — javax.crypto. Şəbəkə kəsiyi (`Transport`) testlərdə
+`ScriptedTransport` ilə əvəz olunur.
+
+## Testlər
+
+- **Unit (Robolectric)**: imza vektoru, SSE multi-line/[DONE]/EOF, faza xəritməsi,
+  WAF təkrarı, pagination, zəncir gəzintisi, upload parse, markdown, session
+- **Startup smoke (Robolectric)**: hər ekran REAL lifecycle ilə açılır; tam
+  göndərmə axını (yaz → göndər → stream → render); login captcha→token; models
+  xətasında fallback YOXDUR; crash hesabatı
+- **Canlı (LIVE_TEST=1)**: real chat.z.ai — qonaq token, modellər, signin-captcha;
+  datacenter IP-dən tam dövr WAF/captcha ilə məhdudlaşır (telefonda işləyir)
 
 ```bash
-./gradlew assembleRelease
-# APK: app/build/outputs/apk/release/app-release-unsigned.apk
+gradle test                      # unit + smoke
+LIVE_TEST=1 gradle test          # + canlı protokol
 ```
-
-## Lisenziya
-
-[LICENSE](LICENSE)

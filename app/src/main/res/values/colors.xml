@@ -1,4 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="bg_page">#FF161616</color>
+    <!-- Spec §10 dark tokens -->
+    <color name="page">#FF161616</color>
+    <color name="surface">#FF202020</color>
+    <color name="bg">#FF2B2B2B</color>
+    <color name="text">#FFF8F8F8</color>
+    <color name="text2">#FFADADAD</color>
+    <color name="text3">#FF747474</color>
+    <color name="accent">#FF4099FF</color>
+    <color name="border">#1AFFFFFF</color>
+    <color name="danger">#FFFF8080</color>
+    <color name="code_bg">#FF141414</color>
+    <color name="scrim">#99000000</color>
+    <color name="icon_tint">#FFF8F8F8</color>
 </resources>

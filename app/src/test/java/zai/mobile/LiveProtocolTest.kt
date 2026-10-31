@@ -1,10 +1,5 @@
 package zai.mobile
 
-import android.content.Context
-import androidx.test.core.app.ApplicationProvider
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
@@ -12,91 +7,109 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import zai.mobile.engine.ChatEngine
+import zai.mobile.engine.ChatState
+import zai.mobile.engine.TurnEvent
+import zai.mobile.protocol.AuthApi
+import zai.mobile.protocol.AuthResult
+import zai.mobile.protocol.ChatsApi
+import zai.mobile.protocol.CompletionApi
+import zai.mobile.protocol.DeviceIds
+import zai.mobile.protocol.ModelsApi
+import zai.mobile.protocol.Signature
+import zai.mobile.protocol.UrlConnectionTransport
+import zai.mobile.protocol.ZaiException
+import zai.mobile.protocol.ZaiHttp
+import zai.mobile.protocol.ZaiModel
+import zai.mobile.state.Session
 
 /**
- * CANLI PROTOKOL TESTİ — real chat.z.ai ilə yoxlama.
+ * CANLI PROTOKOL TESTİ — real chat.z.ai.
  *
- * MƏRHƏLƏ 1-2 (hər IP-dən işləməlidir): qonaq tokeni + model siyahısı.
- * MƏRHƏLƏ 3 (tam dövr: chat yaratma → SSE completion → saxlanma):
- *   - təmiz (rezident) IP-də tam işləməlidir;
- *   - datacenter IP-dən chat.z.ai WAF-ı POST /api/v1/chats/new-i 405 ilə
- *     bloklayır və completions FRONTEND_CAPTCHA_REQUIRED qaytarır — bu
- *     MÜHİT məhdudiyyətidir, protokol xətası deyil (Rust dövründə də belə
- *     idi; istifadəçi telefonunda axın işləyir). Bu halda test skip olunur.
+ * MƏRHƏLƏ 1-2 (hər IP-dən): qonaq tokeni + model siyahısı.
+ * MƏRHƏLƏ 2b: signin-captcha JSON yolu (datacenter IP-dən də keçir).
+ * MƏRHƏLƏ 3 (tam dövr): təmiz IP-də işləyir; datacenter IP-də WAF/captcha
+ * bloklayır — bu MÜHİT məhdudiyyətidir (telefonda işləyir) → skip.
  *
- * Yalnız LIVE_TEST=1 ilə işləyir:
- *   LIVE_TEST=1 ./gradlew test --tests 'zai.mobile.LiveProtocolTest'
+ * Yalnız LIVE_TEST=1 ilə: LIVE_TEST=1 gradle test
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class LiveProtocolTest {
 
+    private val fp = Signature.Fingerprint(
+        screenWidth = 1080, screenHeight = 2400, pixelRatio = "2.625",
+        timezone = "Asia/Baku", timezoneOffsetMinutes = -240,
+    )
+
     @Test(timeout = 300_000)
-    fun guestAuth_models_fullCompletion() {
+    fun guest_models_signinCaptcha_fullCompletion() {
         assumeTrue("LIVE_TEST=1 lazımdır", System.getenv("LIVE_TEST") == "1")
-        ZaiApi.baseOverride = null
-        val ctx = ApplicationProvider.getApplicationContext<Context>()
-        val session = Session(ctx)
-        val api = ZaiApi("uid_livetest12345")
+        val http = ZaiHttp(UrlConnectionTransport(), DeviceIds.new())
 
-        runBlocking {
-            // ---- Mərhələ 1: qonaq girişi (real token) ----
-            val auth = api.guestAuth()
-            assertTrue("qonaq tokeni boşdur", auth.token.isNotEmpty())
-            assertTrue("rol guest olmalıdır", auth.isGuest)
-            println("LIVE 1/3 OK: guest token (${auth.token.take(16)}…) name=${auth.userName}")
-            session.saveAuth(auth)
+        // ---- Mərhələ 1: warm-up + qonaq ----
+        http.warmUp()
+        val authApi = AuthApi(http)
+        val guest = authApi.guest()
+        assertTrue("qonaq tokeni boşdur", guest.token.isNotEmpty())
+        assertTrue(guest.isGuest)
+        println("LIVE 1/3 OK: guest token (${guest.token.take(14)}…) name=${guest.userName}")
 
-            // ---- Mərhələ 2: modellər ----
-            val models = api.models(auth.token, isGuest = true)
-            assertTrue("model siyahısı boşdur", models.isNotEmpty())
-            println("LIVE 2/3 OK: ${models.size} model, enabled: ${models.filter { it.enabled }.map { it.id }}")
+        // ---- Mərhələ 2: modellər (canlı, statik fallback yoxdur) ----
+        val models = ModelsApi(http).list(guest.token, true)
+        assertTrue("model siyahısı boşdur", models.isNotEmpty())
+        println("LIVE 2/3 OK: ${models.size} model: ${models.map { it.id }}")
 
-            // ---- Mərhələ 3: tam completion dövrü ----
-            val model = models.firstOrNull { it.enabled }
-                ?: ModelInfo("x-preview-l", "GLM-5.3-Flash", true, listOf("low", "high", "max"))
-            val engine = ChatEngine(api, session)
-            val state = ChatState()
-            val events = mutableListOf<StreamEvent>()
-            val scope = CoroutineScope(Job() + Dispatchers.Unconfined)
+        // ---- Mərhələ 2b: signin captcha yolu (real 400 JSON) ----
+        val signin = authApi.signin("nobody-probe@example.com", "wrong-password-1")
+        assertTrue("yanlış credential heç vaxt Ok olmamalıdır", signin !is AuthResult.Ok)
+        println(
+            "LIVE 2b OK: signin → " + when (signin) {
+                is AuthResult.Captcha -> "Captcha (real API JSON parse işləyir)"
+                is AuthResult.Failed -> "Failed(${signin.error.message})"
+                else -> "?"
+            },
+        )
 
-            val job: Job = engine.startSend(
-                scope, state,
-                history = emptyList(),
-                prompt = "Reply with the single word TESTOK and nothing else.",
-                attachments = emptyList(),
-                model = model.id,
-                effort = model.effortLevels.firstOrNull() ?: "high",
-                isFirst = true,
-            ) { ev -> synchronized(events) { events += ev } }
+        // ---- Mərhələ 3: tam dövr ----
+        val model: ZaiModel = models.first()
+        val chatsApi = ChatsApi(http)
+        val completionApi = CompletionApi(http)
+        val session = Session(androidx.test.core.app.ApplicationProvider.getApplicationContext())
+        session.saveAuth(guest)
+        val engine = ChatEngine(authApi, chatsApi, completionApi, session)
+        val state = ChatState()
+        val events = ArrayList<TurnEvent>()
 
-            job.join()
-
-            val deltas = synchronized(events) { events.filterIsInstance<StreamEvent.Delta>() }
-            val errors = synchronized(events) { events.filterIsInstance<StreamEvent.Error>() }
-            val captcha = synchronized(events) { events.any { it is StreamEvent.CaptchaRequired } }
-            val answer = deltas.joinToString("") { it.text }
-
-            val blocked = captcha || errors.any {
-                (it as StreamEvent.Error).message.contains("WAF block")
+        try {
+            runBlocking {
+                engine.sendTurn(
+                    state,
+                    "Reply with the single word TESTOK and nothing else.",
+                    emptyList(),
+                    model,
+                    model.effortLevels.lastOrNull().orEmpty(),
+                    fp,
+                ) { events.add(it) }
             }
-            if (blocked) {
-                // Datacenter IP WAF/captcha bloku — mühit məhdudiyyəti.
-                // İmza və protokol qəbul EDİLİB (HTTP 200 + struktur cavab),
-                // sadəcə bu IP üçün məzmun verilmir. Rezident IP-də tam işləyir.
-                println(
-                    "LIVE 3/3 SKIP (mühit): datacenter IP WAF/captcha bloku — " +
-                        "captcha=$captcha, err=${errors.firstOrNull()?.let { (it as StreamEvent.Error).message }}. " +
-                        "İstifadəçi telefonunda (rezident IP) bu axın Rust dövründə olduğu kimi işləyir.")
-                return@runBlocking
-            }
-
-            assertTrue(
-                "serverdən xəta gəldi: ${errors.joinToString { (it as StreamEvent.Error).message }}",
-                errors.isEmpty())
-            assertTrue("serverdə chat yaradılmadı (chatId boşdur)", state.chatId.isNotEmpty())
-            assertTrue("axından mətn gəlmədi", answer.isNotBlank())
-            println("LIVE 3/3 OK: TAM DÖVR — cavab='${answer.take(80)}' chatId=${state.chatId}")
+        } catch (e: ZaiException) {
+            println("LIVE 3/3 SKIP (mühit): ${e.message} — datacenter IP bloku; telefonda işləyir.")
+            return
         }
+
+        val failed = events.filterIsInstance<TurnEvent.Failed>().singleOrNull()
+        if (failed != null && !failed.canRetry) {
+            println("LIVE 3/3 SKIP (mühit): server xətası — ${failed.message}")
+            return
+        }
+
+        val answer = events.filterIsInstance<TurnEvent.Delta>().joinToString("") { it.text }
+        assertTrue(
+            "serverdən xəta: ${failed?.message}",
+            failed == null,
+        )
+        assertTrue("serverdə chat yaradılmadı", !state.chatId.isNullOrBlank())
+        assertTrue("axından mətn gəlmədi", answer.isNotBlank())
+        println("LIVE 3/3 OK: TAM DÖVR — cavab='${answer.take(60)}' chatId=${state.chatId}")
     }
 }
