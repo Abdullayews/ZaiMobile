@@ -120,6 +120,11 @@ object Fullscreen {
                     WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
             }
         }
+        // Claude app dərsi: Android 12+ — tapjacking-ə qarşı overlay
+        // pəncərələrini gizlət (icazə tələb etmir, banking app-ləri edir).
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            activity.window.setHideOverlayWindows(true)
+        }
     }
 
     fun onFocus(activity: Activity, hasFocus: Boolean) {
