@@ -31,9 +31,21 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+
+    testOptions {
+        unitTests {
+            // Robolectric: real resurslar (PNG, string-lar) testlərə düşsün
+            isIncludeAndroidResources = true
+        }
+    }
 }
 
 dependencies {
     // Yeganə xarici asılılıq — korutinlər (Dərs 15-16)
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+
+    // Testlər: JUnit4 + Robolectric (headless Android) + androidx.test (ApplicationProvider)
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.14.1")
+    testImplementation("androidx.test:core:1.6.1")
 }
