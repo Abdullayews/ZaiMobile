@@ -66,6 +66,7 @@ class LoginActivity : Activity() {
             finish()
             return
         }
+        CrashLog.maybeShow(this)
         intent.getStringExtra("exit_toast")?.let {
             Toast.makeText(this, it, Toast.LENGTH_LONG).show()
         }

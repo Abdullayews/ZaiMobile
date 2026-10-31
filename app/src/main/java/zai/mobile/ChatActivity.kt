@@ -109,6 +109,7 @@ class ChatActivity : Activity() {
         Fullscreen.apply(this)
         Fullscreen.applyInsets(kök, navBar, footer)
         Fullscreen.applyInsets(sidebar, sidebar, sidebar)
+        CrashLog.maybeShow(this)
 
         mesajAdapter = MesajAdapter()
         mesajListesi.adapter = mesajAdapter

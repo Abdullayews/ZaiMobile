@@ -11,5 +11,6 @@ class App : Application() {
         if (CookieHandler.getDefault() == null) {
             CookieHandler.setDefault(CookieManager())
         }
+        CrashLog.install(this)
     }
 }
